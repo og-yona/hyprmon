@@ -11,8 +11,10 @@ At current state v0.68 hyprmon is "daily driveable".
 - What is missing? 
 - Do we have bugs/memory leaks?
 - Technical Debt..?
-- Windows can be resized "too large" causing other windows not to shrink as small as intended, which may break the tiling behaviour on the workspace. 
-- When moving windows from workspace to workspace, occasionally auto-tiling does not correctly resize the window on final target workspace.
+- Bug: Windows can be resized "too large" causing other windows not to shrink as small as intended, which may break the tiling behaviour on the workspace. 
+- Bug: When moving windows from workspace to workspace, occasionally auto-tiling does not correctly resize the window on final target workspace.
+- Bug: Overlays/borders are drawn from tiled windows on top of floating/sticky windows (and also over popups/prompts)
+- Bug: Floating/sticky windows missing overlays (should draw them, as/if managed by hyprmon tiler)
 
 ### v0.69 Done
 - [ ] Done

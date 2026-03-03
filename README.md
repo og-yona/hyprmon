@@ -1,5 +1,7 @@
 # hyprmon
 
+<center><img src=icon.png width=200 height=200></center>
+
 **hyprmon** is a Linux Mint **Cinnamon (X11)** extension that adds a **toggleable, per-workspace auto‑tiling mode** inspired by Hyprland—without replacing Muffin or the rest of Cinnamon’s window manager.
 
 The design goal is “Hypr-ish ergonomics” while staying pragmatic and lightweight on Cinnamon.
@@ -213,6 +215,8 @@ If behavior gets odd:
 - Dialogs/popups are intentionally left floating by heuristic (transient/attached dialog checks).
 - Bug: Windows can be resized "too large" causing other windows not to shrink as small as intended, which may break the tiling behaviour on the workspace. 
 - Bug: When moving windows from workspace to workspace, occasionally auto-tiling does not correctly resize the window on final target workspace.
+- Bug: Overlays/borders are drawn from tiled windows on top of floating/sticky windows (and also over popups/prompts)
+- Bug: Floating/sticky windows missing overlays (should draw them, as/if managed by hyprmon tiler)
 
 ---
 
