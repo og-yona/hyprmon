@@ -1,0 +1,338 @@
+{
+  "_separator_visuals": { "type": "separator" },
+  "_header_basic_settings": {
+    "type": "header",
+    "description": "Basic settings & Hotkeys",
+    "tooltip": "More window/tile management related hotkeys at the bottom section of settings."
+  },
+  "defaultEnabledWorkspaces": {
+    "type": "entry",
+    "description": "Enable tiling by default on these workspaces",
+    "tooltip": "Comma/space-separated 1-based workspace numbers. Example: \"1, 3\" enables tiling on workspace 1 and 3 on extension start.",
+    "default": ""
+  },
+  "tilingToggleHotkey": {
+    "type": "keybinding",
+    "default": "<Super>t",
+    "description": "Toggle hyprmon auto-tiling on the current workspace"
+  },
+  "tilingRetileHotkey": {
+    "type": "keybinding",
+    "default": "<Super><Shift>t",
+    "description": "Force re-tile windows on the current workspace (manual reflow)"
+  }, 
+  "tilingResetHotkey": {
+    "type": "keybinding",
+    "default": "<Super><Shift>r",
+    "description": "Reset hyprmon tiling layout on the current workspace"
+  },
+  "gapsToggleHotkey": {
+    "type": "keybinding",
+    "default": "<Super>g",
+    "description": "Toggle hyprmon gaps on/off on the current workspace (tiling-enabled only)"
+  },
+
+  "_header_window_modes": {
+    "type": "header",
+    "description": "Window modes (v0.64 & v0.65)"
+  },
+  "floatToggleHotkey": {
+    "type": "keybinding",
+    "default": "<Super>v",
+    "description": "Toggle floating for focused window (works on tiling-enabled workspaces too)"
+  },
+  "defloatAllHotkey": {
+    "type": "keybinding",
+    "default": "<Super><Shift>v",
+    "description": "De-float all hyprmon floating/sticky windows (drops them back into tiling if enabled)"
+  },
+  "stickyToggleHotkey": {
+    "type": "keybinding",
+    "default": "<Super>s",
+    "description": "Toggle sticky (all workspaces) for focused window (also marks it floating)"
+  },
+  "forceFloatingRules": {
+    "type": "entry",
+    "description": "Force floating windows (optional rules)",
+    "tooltip": "Comma/newline-separated regex rules. If a rule matches a window's WM_CLASS or title, hyprmon will IGNORE it for tiling (it remains floating). Prefixes: class:<regex> or title:<regex>. Without prefix, matches both. Lines starting with # are comments.",
+    "default": ""
+  },
+
+  "_header_gaps": {
+    "type": "header",
+    "description": "Gaps"
+  },
+  "outerGap": {
+    "type": "spinbutton",
+    "description": "Outer gap (px) — distance from screen edge",
+    "tooltip": "Applied between the usable work area (panels excluded) and the tiled window region.",
+    "default": 18,
+    "min": 0,
+    "max": 80,
+    "step": 1
+  },
+  "extraTopGap": {
+    "type": "spinbutton",
+    "description": "Extra top gap (px) — additional reserved space",
+    "tooltip": "Extra vertical padding at the top of the tiling work area. Useful if panels/bars are not detected correctly.",
+    "default": 0,
+    "min": 0,
+    "max": 300,
+    "step": 1
+  },
+  "extraBottomGap": {
+    "type": "spinbutton",
+    "description": "Extra bottom gap (px) — additional reserved space",
+    "tooltip": "Extra vertical padding at the bottom of the tiling work area. Useful if panels/bars are not detected correctly.",
+    "default": 0,
+    "min": 0,
+    "max": 300,
+    "step": 1
+  },
+  "innerGap": {
+    "type": "spinbutton",
+    "description": "Inner gap (px) — distance between tiled windows",
+    "tooltip": "Applied between adjacent tiled windows.",
+    "default": 18,
+    "min": 0,
+    "max": 80,
+    "step": 1
+  },
+  "_header_borders": {
+    "type": "header",
+    "description": "Tile borders (overlays)"
+  },
+  "tileBordersEnabled": {
+    "type": "checkbox",
+    "default": true,
+    "description": "Draw tile border overlays on tiling-enabled workspaces"
+  },
+  "tileBorderActiveWidth": {
+    "type": "spinbutton",
+    "description": "Active tile border width (px)",
+    "tooltip": "Border width for the focused tile on the active workspace.",
+    "default": 1,
+    "min": 0,
+    "max": 20,
+    "step": 1,
+    "dependency": "tileBordersEnabled"
+  },
+  "tileBorderInactiveWidth": {
+    "type": "spinbutton",
+    "description": "Inactive tile border width (px)",
+    "tooltip": "Border width for non-focused tiles on the active workspace.",
+    "default": 1,
+    "min": 0,
+    "max": 20,
+    "step": 1,
+    "dependency": "tileBordersEnabled"
+  },
+  "tileBorderActiveColor": {
+    "type": "colorchooser",
+    "description": "Active tile border color",
+    "tooltip": "Border color for the focused tile.",
+    "default": "rgba(0,242,188,0.89)",
+    "dependency": "tileBordersEnabled"
+  },
+  "tileBorderInactiveColor": {
+    "type": "colorchooser",
+    "description": "Inactive tile border color",
+    "tooltip": "Border color for non-focused tiles.",
+    "default": "rgba(120,120,120,0.45)",
+    "dependency": "tileBordersEnabled"
+  },
+  "tileBorderRadius": {
+    "type": "spinbutton",
+    "description": "Tile border corner radius (px)",
+    "tooltip": "Rounded corners for the border overlays (visual only).",
+    "default": 4,
+    "min": 0,
+    "max": 60,
+    "step": 1,
+    "dependency": "tileBordersEnabled"
+  },
+
+  "_header_new_windows": {
+    "type": "header",
+    "description": "New window placement (v0.63)"
+  },
+  "newWindowPointerModifier": {
+    "type": "entry",
+    "description": "Pointer placement modifier (optional)",
+    "tooltip": "If set (e.g. \"Alt\" or \"Super\"), holding that modifier WHILE a new window is created will place it like a drop under the mouse cursor (splitting the tile under the pointer). If empty, pointer placement is disabled. Accepted: Super|Mod4|Meta|Win, Alt|Mod1, Ctrl|Control, Shift.",
+    "default": "Super"
+  },
+
+  "_header_transitions": {
+    "type": "header",
+    "description": "Optional visuals / transitions (best effort on X11)"
+  },
+  "overlayAnimate": {
+    "type": "checkbox",
+    "default": false,
+    "description": "Animate overlays (safe)"
+  },
+  "overlayAnimateDurationMs": {
+    "type": "spinbutton",
+    "description": "Overlay animation duration (ms)",
+    "tooltip": "Applies to overlay moves/resizes. Disabled automatically during live-resize ticks.",
+    "default": 90,
+    "min": 0,
+    "max": 400,
+    "step": 5,
+    "dependency": "overlayAnimate"
+  },
+  "geometryAnimate": {
+    "type": "checkbox",
+    "default": false,
+    "description": "Animate window geometry (opt-in, may stutter)"
+  },
+  "geometryAnimateDurationMs": {
+    "type": "spinbutton",
+    "description": "Geometry animation duration (ms)",
+    "tooltip": "Small step-based move/resize. Kept very short; disabled during live-resize and live-move grabs.",
+    "default": 90,
+    "min": 0,
+    "max": 300,
+    "step": 5,
+    "dependency": "geometryAnimate"
+  },
+
+  "_header_hotkeys_067": {
+    "type": "header",
+    "description": "Keyboard focus/swap/resize (v0.67)"
+  },
+  "focusLeftHotkey": {
+    "type": "keybinding",
+    "default": "<Super><Shift>Left",
+    "description": "Focus tile to the left"
+  },
+  "focusRightHotkey": {
+    "type": "keybinding",
+    "default": "<Super><Shift>Right",
+    "description": "Focus tile to the right"
+  },
+  "focusUpHotkey": {
+    "type": "keybinding",
+    "default": "<Super><Shift>Up",
+    "description": "Focus tile above"
+  },
+  "focusDownHotkey": {
+    "type": "keybinding",
+    "default": "<Super><Shift>Down",
+    "description": "Focus tile below"
+  },
+
+  "_header_spacer_2": {
+    "type": "header",
+    "description": ""
+  },
+
+  "swapLeftHotkey": {
+    "type": "keybinding",
+    "default": "<Super><Alt>Left",
+    "description": "Swap with tile to the left"
+  },
+  "swapRightHotkey": {
+    "type": "keybinding",
+    "default": "<Super><Alt>Right",
+    "description": "Swap with tile to the right"
+  },
+  "swapUpHotkey": {
+    "type": "keybinding",
+    "default": "<Super><Alt>Up",
+    "description": "Swap with tile above"
+  },
+  "swapDownHotkey": {
+    "type": "keybinding",
+    "default": "<Super><Alt>Down",
+    "description": "Swap with tile below"
+  },
+
+  "changeShapeLeftHotkey": {
+    "type": "keybinding",
+    "default": "<Super><Control><Alt>Left",
+    "description": "Change shape with left neighbor (toggle split axis for a symmetric pair)"
+  },
+  "changeShapeRightHotkey": {
+    "type": "keybinding",
+    "default": "<Super><Control><Alt>Right",
+    "description": "Change shape with right neighbor (toggle split axis for a symmetric pair)"
+  },
+  "changeShapeUpHotkey": {
+    "type": "keybinding",
+    "default": "<Super><Control><Alt>Up",
+    "description": "Change shape with upper neighbor (toggle split axis for a symmetric pair)"
+  },
+  "changeShapeDownHotkey": {
+    "type": "keybinding",
+    "default": "<Super><Control><Alt>Down",
+    "description": "Change shape with lower neighbor (toggle split axis for a symmetric pair)"
+  },
+
+  "_header_spacer_3": {
+    "type": "header",
+    "description": ""
+  },
+
+  "resizeStepPx": {
+    "type": "spinbutton",
+    "description": "Keyboard resize step (px)",
+    "tooltip": "How many pixels to move the split boundary per keypress when using Grow hotkeys.",
+    "default": 8,
+    "min": 1,
+    "max": 160,
+    "step": 1
+  },
+  "minTileSizePx": {
+    "type": "spinbutton",
+    "description": "Minimum tile size (px)",
+    "tooltip": "Best-effort safety clamp: prevents keyboard resize and live border resize from pushing the layout into tiles smaller than this. If the current layout already violates this minimum (too many windows), the clamp is relaxed to avoid getting stuck.",
+    "default": 120,
+    "min": 40,
+    "max": 800,
+    "step": 5
+  },
+
+  "growLeftHotkey": {
+    "type": "keybinding",
+    "default": "<Super><Control>Left",
+    "description": "Grow active tile from left edge (takes space from left neighbor)"
+  },
+  "growRightHotkey": {
+    "type": "keybinding",
+    "default": "<Super><Control>Right",
+    "description": "Grow active tile from right edge (takes space from right neighbor)"
+  },
+  "growUpHotkey": {
+    "type": "keybinding",
+    "default": "<Super><Control>Up",
+    "description": "Grow active tile from top edge (takes space from upper neighbor)"
+  },
+  "growDownHotkey": {
+    "type": "keybinding",
+    "default": "<Super><Control>Down",
+    "description": "Grow active tile from bottom edge (takes space from lower neighbor)"
+  },
+
+  "shrinkLeftHotkey": {
+    "type": "keybinding",
+    "default": "<Super><Control><Shift>Left",
+    "description": "Shrink active tile from left edge"
+  },
+  "shrinkRightHotkey": {
+    "type": "keybinding",
+    "default": "<Super><Control><Shift>Right",
+    "description": "Shrink active tile from right edge"
+  },
+  "shrinkUpHotkey": {
+    "type": "keybinding",
+    "default": "<Super><Control><Shift>Up",
+    "description": "Shrink active tile from top edge"
+  },
+  "shrinkDownHotkey": {
+    "type": "keybinding",
+    "default": "<Super><Control><Shift>Down",
+    "description": "Shrink active tile from bottom edge"
+  }
+}

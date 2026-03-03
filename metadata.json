@@ -1,0 +1,13 @@
+{
+    "cinnamon-version": [
+        "6.2"
+    ],
+    "uuid": "hyprmon@og-yona",
+    "name": "hyprmon",
+    "description": "Auto-tile and snap & manage your windows per workspace in hyprland-like way.",
+    "version": "0.6.8",
+    "multiversion": false,
+    "url": "https://github.com/og-yona/hyprmon",
+    "author": "og-yona",
+    "last-edited": 1772501200
+}
