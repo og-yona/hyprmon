@@ -195,6 +195,7 @@ function snapToRect(metaWindow, rect) {
     // If the window is maximized, Mutter will often ignore move/resize requests.
     // For autotiling workspaces, we force it back to a "normal" state first.
     try {
+        // Unmaximize
         const maxH = _safeBool(metaWindow.maximized_horizontally, false);
         const maxV = _safeBool(metaWindow.maximized_vertically, false);
         if ((maxH || maxV) && typeof metaWindow.unmaximize === 'function') {
@@ -214,6 +215,25 @@ function snapToRect(metaWindow, rect) {
     } catch (e) {
         // non-fatal; still attempt move/resize
     }
+
+    // v0.682: best-effort to undo "tiled-to-side" / snapping state.
+    // Some Muffin/Mutter builds keep a tile mode that can resist move_resize_frame(),
+    // especially after keyboard snap-to-half-screen.
+    try {
+        if (typeof metaWindow.untile === 'function') {
+            metaWindow.untile();
+        }
+    } catch (e) {}
+    try {
+        if (typeof metaWindow.set_tile_mode === 'function' && Meta.TileMode && Meta.TileMode.NONE !== undefined) {
+            metaWindow.set_tile_mode(Meta.TileMode.NONE);
+        }
+    } catch (e) {}
+    try {
+        if (typeof metaWindow.tile === 'function' && Meta.TileMode && Meta.TileMode.NONE !== undefined) {
+            metaWindow.tile(Meta.TileMode.NONE);
+        }
+    } catch (e) {}
 
     metaWindow.move_resize_frame(
         false,

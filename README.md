@@ -214,9 +214,11 @@ If behavior gets odd:
 - No Wayland support (Cinnamon Wayland is experimental and uses different APIs).
 - Dialogs/popups are intentionally left floating by heuristic (transient/attached dialog checks).
 - Bug: Windows can be resized "too large" causing other windows not to shrink as small as intended, which may break the tiling behaviour on the workspace. 
-- Bug: When moving windows from workspace to workspace, occasionally auto-tiling does not correctly resize the window on final target workspace.
 - Bug: Overlays/borders are drawn from tiled windows on top of floating/sticky windows (and also over popups/prompts)
-- Bug: Floating/sticky windows missing overlays (should draw them, as/if managed by hyprmon tiler)
+- Bug: Floating/sticky windows missing overlays (should draw them, as/if managed by hyprmon tiler (they are managed by hyprmon, if they are floated/stickied from auto-tiled workspace))
+- Bug: Minimized/closed windows keep drawing the overlay/borders even when window not on the desktop anymore
+- Bug: When moving windows from workspace to workspace, occasionally auto-tiling does not correctly resize the window on final target workspace.
+- Bug: Layouts & Actual window sizes get mixed up occasionally (add/remove monitors?) - the "Force re-tile windows on the current workspace" should reset current workspaces layout, to allow recovery from "messed up layouts".
 
 ---
 

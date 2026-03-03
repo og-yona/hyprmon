@@ -6,52 +6,50 @@
 // - Draw borders only (transparent inside).
 // - Optional overlay-only animation (safe) via actor.ease when available.
 // - No input handling (reactive=false).
+//
+// v0.682:
+// - Borders are no longer drawn in Main.uiGroup (which sits above ALL windows).
+// - Each border actor is inserted as a sibling just ABOVE the window's own actor,
+//   in whatever group/layer the compositor currently uses for that window.
+//   This ensures borders:
+//     * do NOT draw over dialogs/popups that are above the window
+//     * do NOT draw over floating/sticky/always-on-top windows that are above tiled windows
+//     * DO draw for floating/sticky windows (if Application includes them in the sync set)
 
 const Clutter = imports.gi.Clutter;
 const St = imports.gi.St;
 const Main = imports.ui.main;
 
 class TileBorders {
-    #group = null;
-    #byKey = Object.create(null); // key -> St.Widget
+    // key -> { actor: St.Widget, parent: Clutter.Actor|null, anchor: Clutter.Actor|null, _style: string }
+    #byKey = Object.create(null);
     #shown = false;
 
-    #ensureGroup() {
-        if (this.#group) return;
-        this.#group = new Clutter.Actor({ reactive: false });
-        // uiGroup is above windows; borders remain visible without touching window actors.
-        Main.uiGroup.add_child(this.#group);
-        this.#group.hide();
-        this.#shown = false;
-    }
-
     show() {
-        this.#ensureGroup();
         if (this.#shown) return;
-        try { this.#group.show(); } catch (e) {}
         this.#shown = true;
+        for (const k in this.#byKey) {
+            try { this.#byKey[k].actor.show(); } catch (e) {}
+        }
     }
 
     hide() {
-        this.#ensureGroup();
         if (!this.#shown) return;
-        try { this.#group.hide(); } catch (e) {}
         this.#shown = false;
+        for (const k in this.#byKey) {
+            try { this.#byKey[k].actor.hide(); } catch (e) {}
+        }
     }
 
     clear() {
         for (const k in this.#byKey) {
-            try { this.#byKey[k].destroy(); } catch (e) {}
+            try { this.#byKey[k].actor.destroy(); } catch (e) {}
         }
         this.#byKey = Object.create(null);
     }
 
     destroy() {
         try { this.clear(); } catch (e) {}
-        if (this.#group) {
-            try { this.#group.destroy(); } catch (e) {}
-        }
-        this.#group = null;
         this.#shown = false;
     }
 
@@ -62,10 +60,52 @@ class TileBorders {
         // Transparent fill; border only.
         return `background-color: rgba(0,0,0,0); border: ${w}px solid ${c}; border-radius: ${r}px;`;
     }
+ 
+    #defaultParent() {
+        // Prefer the compositor window group if available.
+        try { if (global && global.window_group) return global.window_group; } catch (e) {}
+        try { if (Main && Main.uiGroup) return Main.uiGroup; } catch (e) {}
+        return null;
+    }
 
-    #moveResize(actor, rect, animate, durationMs) {
-        const x = Math.round(rect.x);
-        const y = Math.round(rect.y);
+    #parentOf(actor) {
+        try { return actor ? actor.get_parent() : null; } catch (e) {}
+        return null;
+    }
+
+    #ensureAboveAnchor(borderActor, anchorActor) {
+        if (!borderActor || !anchorActor) return;
+        const pA = this.#parentOf(borderActor);
+        const pB = this.#parentOf(anchorActor);
+        if (!pA || !pB || pA !== pB) return;
+
+        // Best-effort ways to place border just above anchor.
+        try { borderActor.raise(anchorActor); return; } catch (e) {}
+        try { pA.set_child_above_sibling(borderActor, anchorActor); return; } catch (e) {}
+        try {
+            // Some builds expose insert_child_above on the container.
+            pA.remove_child(borderActor);
+            pA.insert_child_above(borderActor, anchorActor);
+            return;
+        } catch (e) {}
+    }
+
+    #parentStageOffset(parent) {
+        // Returns parent's transformed position in stage coords.
+        try {
+            if (parent && typeof parent.get_transformed_position === 'function') {
+                const p = parent.get_transformed_position();
+                // gjs returns [x,y]
+                return [Math.round(p[0] || 0), Math.round(p[1] || 0)];
+            }
+        } catch (e) {}
+        return [0, 0];
+    }
+
+    #moveResize(actor, rect, animate, durationMs, parent) {
+        const [ox, oy] = this.#parentStageOffset(parent);
+        const x = Math.round(rect.x - ox);
+        const y = Math.round(rect.y - oy);
         const w = Math.max(0, Math.round(rect.width));
         const h = Math.max(0, Math.round(rect.height));
 
@@ -85,71 +125,91 @@ class TileBorders {
         });
     }
 
-    // rectByKey: { [key]: {x,y,width,height} }
+    // entriesByKey:
+    //   { [key]: { rect:{x,y,width,height}, anchor?:Clutter.Actor|null } }
+    // Also accepts legacy value = rect.
     // focusedKey: string|null
     // cfg: { activeWidth, inactiveWidth, activeColor, inactiveColor, radius, animate, durationMs }
-    sync(rectByKey, focusedKey, cfg) {
-        this.#ensureGroup();
-        if (!rectByKey || typeof rectByKey !== 'object') {
+    sync(entriesByKey, focusedKey, cfg) {
+        if (!entriesByKey || typeof entriesByKey !== 'object') {
             this.clear();
             return;
         }
 
-        const want = new Set(Object.keys(rectByKey).map(String));
+        const want = new Set(Object.keys(entriesByKey).map(String));
 
         // Remove stale actors
         for (const k in this.#byKey) {
             if (!want.has(String(k))) {
-                try { this.#byKey[k].destroy(); } catch (e) {}
+                try { this.#byKey[k].actor.destroy(); } catch (e) {}
                 delete this.#byKey[k];
             }
         }
 
         // Create/update actors
         for (const k of want) {
-            const rect = rectByKey[k];
+            const entry = entriesByKey[k];
+            const rect = (entry && entry.rect) ? entry.rect : entry;
+            const anchor = (entry && entry.anchor) ? entry.anchor : null;
             if (!rect) continue;
 
-            let a = this.#byKey[k];
-            if (!a) {
-                a = new St.Widget({
+            let rec = this.#byKey[k];
+            if (!rec) {
+                const actor = new St.Widget({
                     reactive: false,
                     can_focus: false,
                     track_hover: false,
                     style: 'background-color: rgba(0,0,0,0);'
                 });
-                this.#byKey[k] = a;
-                this.#group.add_child(a);
+                rec = { actor, parent: null, anchor: null, _style: '' };
+                this.#byKey[k] = rec;
             }
 
             const isActive = (focusedKey !== null && String(k) === String(focusedKey));
             const style = this.#styleFor(isActive, cfg);
 
             try {
-                if (a._hyprmonStyle !== style) {
-                    a.set_style(style);
-                    a._hyprmonStyle = style;
+                if (rec._style !== style) {
+                    rec.actor.set_style(style);
+                    rec._style = style;
                 }
             } catch (e) {
                 // If styling fails for some reason, keep it non-fatal.
             }
 
-            // Keep borders above each other deterministically: focused on top.
-            try { a.raise_top(); } catch (e) {}
+            // Ensure the actor is parented into the window's layer/group (best-effort).
+            let parent = null;
+            const anchorParent = anchor ? this.#parentOf(anchor) : null;
+            if (anchorParent) parent = anchorParent;
+            if (!parent) parent = this.#defaultParent();
+            if (!parent) continue;
+
+            if (rec.parent !== parent) {
+                try {
+                    if (rec.parent) rec.parent.remove_child(rec.actor);
+                } catch (e) {}
+                try { parent.add_child(rec.actor); } catch (e) {}
+                rec.parent = parent;
+            }
+            rec.anchor = anchor;
+
+            // Keep border just above the window actor (so it respects real stacking).
+            if (anchor) this.#ensureAboveAnchor(rec.actor, anchor);
 
             try {
-                this.#moveResize(a, rect, !!cfg.animate, Math.max(0, Math.floor(Number(cfg.durationMs) || 0)));
+                this.#moveResize(rec.actor, rect, !!cfg.animate, Math.max(0, Math.floor(Number(cfg.durationMs) || 0)), rec.parent);
             } catch (e) {
                 // Fallback: no animation
                 try {
-                    a.set_position(Math.round(rect.x), Math.round(rect.y));
-                    a.set_size(Math.max(0, Math.round(rect.width)), Math.max(0, Math.round(rect.height)));
+                    const [ox, oy] = this.#parentStageOffset(rec.parent);
+                    rec.actor.set_position(Math.round(rect.x - ox), Math.round(rect.y - oy));
+                    rec.actor.set_size(Math.max(0, Math.round(rect.width)), Math.max(0, Math.round(rect.height)));
                 } catch (e2) {}
             }
-        }
 
-        // Keep group above in uiGroup (best effort).
-        try { this.#group.raise_top(); } catch (e) {}
+            // Honor shown/hidden state.
+            try { this.#shown ? rec.actor.show() : rec.actor.hide(); } catch (e) {}
+        }
     }
 }
 

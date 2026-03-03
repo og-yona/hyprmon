@@ -4,17 +4,17 @@ This is a pragmatic roadmap: deliver a usable MVP quickly, then iterate toward â
 
 ---
 
-## See CHANGELOG.md from project start v0 -> v0.68
+## See CHANGELOG.md from project start v0 -> v0.682
 At current state v0.68 hyprmon is "daily driveable".
 
-### v0.681-689 Final Touches (?)
+### v0.683-689 Final Touches (?)
+- Add special colored borders/overlays for floating and sticky (floating default very whitish green, sticky default dark magentaish), "active sticky/float" color would ideally blend the users default active & the float/stick-color.
+- 
 - What is missing? 
 - Do we have bugs/memory leaks?
 - Technical Debt..?
 - Bug: Windows can be resized "too large" causing other windows not to shrink as small as intended, which may break the tiling behaviour on the workspace. 
-- Bug: When moving windows from workspace to workspace, occasionally auto-tiling does not correctly resize the window on final target workspace.
-- Bug: Overlays/borders are drawn from tiled windows on top of floating/sticky windows (and also over popups/prompts)
-- Bug: Floating/sticky windows missing overlays (should draw them, as/if managed by hyprmon tiler)
+- Bug: Still rare occasions where borders and windows do not match unless redraw/re-order
 
 ### v0.69 Done
 - [ ] Done

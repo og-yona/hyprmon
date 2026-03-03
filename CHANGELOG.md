@@ -1,6 +1,31 @@
 # CHANGELOG
 Changelog for hyprmon -project.
 
+ 
+## v0.682 — Overlay stacking + floating overlays + recovery retile
+Fixes / mitigations (best-effort on X11/Muffin):
+- Overlays/borders now respect window stacking:
+  - borders no longer draw over floating/sticky windows or over dialogs/popups
+  - implementation: borders are inserted as siblings just above each window actor (not in Main.uiGroup)
+- Floating/sticky windows managed by hyprmon now get overlays too (active workspace only)
+  - borders follow floating windows while moving/resizing (overlay refresh debounce)
+- “Force re-tile windows on the current workspace” becomes a recovery action:
+  - clears BSP for the active workspace and rebuilds via retile burst
+- Workspace moves now use retile bursts (reduces “half-screen stuck” survivors)
+- Added best-effort “un-tile” in snapToRect() for keyboard snap-to-half-screen cases
+- Monitor layout changes (monitors-changed) clear BSP trees for enabled workspaces and re-tile bursts
+
+### Patch v0.682 (best-effort) — fixes/mitigations for the TODO-listed “quality breaking” bugs
+This patch does three main things:
+- 1. Overlays now follow each window’s stacking (so they don’t draw over floating/sticky windows or dialogs).
+- 2. Floating/sticky windows managed by hyprmon get overlays too (and those overlays follow them while you move/resize).
+- 3. “Force re-tile” becomes a recovery action (clears the BSP for the active workspace before rebuilding), plus more robust reflow on workspace moves and monitor changes.
+
+Notes / expectations
+- The overlay-on-top-of-everything bug is fundamentally caused by Main.uiGroup being above all windows. Moving borders into each window’s own compositor layer is the correct fix on Cinnamon/Muffin.
+- Dialogs/popups are separate window actors and will naturally sit above the tiled window + its border sibling.
+- The “snap to half screen” stubbornness varies by Muffin build; the untile/set_tile_mode/tile(NONE) block is intentionally try/catch heavy.
+
 ## v0.681 - Fix bugs with de-sticky/de-float hotkeys
 What this changes (behavior)
 - You can now un-float and un-sticky normally.

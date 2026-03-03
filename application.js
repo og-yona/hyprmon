@@ -86,6 +86,17 @@ class Application {
  
     // v0.61/v0.62: tile border overlays + optional animation
     #tileBorders = null;
+ 
+    // v0.682: borders need their own lightweight refresh path (esp. for floating/sticky),
+    // and a short suppression window during workspace switches to avoid drawing before windows appear.
+    #borderRefreshTimer = 0;
+    #borderSuppressUntil = 0;
+    #borderSuppressTimer = 0;
+
+    // v0.682: post-retile verification (fix "ignored resize" / half-screen survivors)
+    #verifyTimerByWs = Object.create(null);
+    #verifyTokenByWs = Object.create(null);
+    #verifyLastRetileAtByWs = Object.create(null);
 
     // v0.62: opt-in geometry animation timers (key -> sourceId)
     #geomAnimByKey = Object.create(null);
@@ -213,6 +224,24 @@ class Application {
 
         try { if (this.#tileBorders) this.#tileBorders.destroy(); } catch (e) {}
         this.#tileBorders = null;
+ 
+        // v0.682: cleanup border timers
+        if (this.#borderRefreshTimer) {
+            try { Mainloop.source_remove(this.#borderRefreshTimer); } catch (e) {}
+            this.#borderRefreshTimer = 0;
+        }
+        if (this.#borderSuppressTimer) {
+            try { Mainloop.source_remove(this.#borderSuppressTimer); } catch (e) {}
+            this.#borderSuppressTimer = 0;
+        }
+        // v0.682: cleanup verify timers
+        try {
+            for (const k in this.#verifyTimerByWs) {
+                const id = this.#verifyTimerByWs[k];
+                if (id) Mainloop.source_remove(id);
+            }
+        } catch (e) {}
+        this.#verifyTimerByWs = Object.create(null);
 
         // v0.68: undo "above" that hyprmon applied (best-effort cleanup)
         try {
@@ -1155,6 +1184,122 @@ class Application {
         try { if (this.#tileBorders) this.#tileBorders.clear(); } catch (e) {}
     }
 
+    // v0.682: refresh overlays only (no retile). Used for floating/sticky move/resize/minimize.
+    #scheduleBorderRefreshActive(reason = '', delayMs = 40) {
+        if (!this.#tileBorders) return;
+        const delay = Math.max(0, Math.floor(Number(delayMs) || 0));
+        if (this.#borderRefreshTimer) {
+            try { Mainloop.source_remove(this.#borderRefreshTimer); } catch (e) {}
+            this.#borderRefreshTimer = 0;
+        }
+        this.#borderRefreshTimer = Mainloop.timeout_add(delay, () => {
+            this.#borderRefreshTimer = 0;
+            const ws = this.#getActiveWorkspaceIndex();
+            this.#syncTileBorders(ws, reason ? `overlay-refresh-${reason}` : 'overlay-refresh', false);
+            return false;
+        });
+    }
+
+    // v0.682: during workspace switches, don't draw borders until windows are actually visible.
+    #suppressTileBorders(ms = 200, reason = '') {
+        const dur = Math.max(0, Math.floor(Number(ms) || 0));
+        this.#borderSuppressUntil = Date.now() + dur;
+        try { if (this.#tileBorders) this.#tileBorders.hide(); } catch (e) {}
+
+        if (this.#borderSuppressTimer) {
+            try { Mainloop.source_remove(this.#borderSuppressTimer); } catch (e) {}
+            this.#borderSuppressTimer = 0;
+        }
+        this.#borderSuppressTimer = Mainloop.timeout_add(dur + 30, () => {
+            this.#borderSuppressTimer = 0;
+            this.#scheduleBorderRefreshActive(reason ? `post-suppress-${reason}` : 'post-suppress', 0);
+            return false;
+        });
+    }
+
+    // v0.682: verify the compositor actually applied the layout; if not, do one extra enforcement pass.
+    #scheduleVerifyWorkspace(wsIndex, reason = '') {
+        const activeWs = this.#getActiveWorkspaceIndex();
+        if (wsIndex !== activeWs) return;
+        if (this.#movingWindowKeys.size > 0) return;
+        if (this.#resizingWindowKeys.size > 0) return;
+
+        const token = (this.#verifyTokenByWs[wsIndex] || 0) + 1;
+        this.#verifyTokenByWs[wsIndex] = token;
+
+        const existing = this.#verifyTimerByWs[wsIndex] || 0;
+        if (existing) {
+            try { Mainloop.source_remove(existing); } catch (e) {}
+            this.#verifyTimerByWs[wsIndex] = 0;
+        }
+
+        this.#verifyTimerByWs[wsIndex] = Mainloop.timeout_add(180, () => {
+            this.#verifyTimerByWs[wsIndex] = 0;
+            if ((this.#verifyTokenByWs[wsIndex] || 0) !== token) return false;
+            this.#verifyWorkspaceOnce(wsIndex, reason);
+            return false;
+        });
+    }
+
+    #verifyWorkspaceOnce(wsIndex, reason = '') {
+        const wsKey = String(wsIndex);
+        const byMon = this.#lastLayout?.[wsKey] || null;
+        if (!byMon) return;
+
+        // Merge expected rects for tiled windows.
+        const expected = Object.create(null);
+        for (const monKey in byMon) {
+            const rbk = byMon[monKey]?.rectByKey || null;
+            if (!rbk) continue;
+            for (const k in rbk) expected[String(k)] = rbk[k];
+        }
+        const expKeys = Object.keys(expected);
+        if (!expKeys.length) return;
+
+        // Map current windows by key.
+        const wins = listAllMetaWindows().filter(w => w && w.window_type === Meta.WindowType.NORMAL);
+        const winByKey = new Map();
+        for (const w of wins) winByKey.set(String(this.#windowKey(w)), w);
+
+        const EPS = 4;
+        let mismatched = 0;
+
+        for (const k of expKeys) {
+            if (this.#userFloatingKeys.has(String(k))) continue;
+            const w = winByKey.get(String(k));
+            if (!w) continue;
+            if (this.#getWorkspaceIndexOfWindow(w) !== wsIndex) continue;
+            try {
+                if (w.minimized || (typeof w.is_minimized === 'function' && w.is_minimized())) continue;
+            } catch (e) {}
+            if (this.#isForcedFloat(w)) continue;
+
+            let fr = null;
+            try { fr = w.get_frame_rect(); } catch (e) {}
+            if (!fr) continue;
+            const tr = expected[String(k)];
+            if (!tr) continue;
+
+            const bad =
+                Math.abs(fr.x - tr.x) > EPS ||
+                Math.abs(fr.y - tr.y) > EPS ||
+                Math.abs(fr.width - tr.width) > EPS ||
+                Math.abs(fr.height - tr.height) > EPS;
+            if (bad) { mismatched++; break; }
+        }
+
+        if (!mismatched) return;
+
+        const now = Date.now();
+        const last = this.#verifyLastRetileAtByWs[wsIndex] || 0;
+        if ((now - last) < 900) return; // avoid loops
+        this.#verifyLastRetileAtByWs[wsIndex] = now;
+
+        // One extra enforcement pass usually fixes "snap/half-screen" survivors.
+        this.#retileWorkspaceNow(wsIndex, false);
+        this.#scheduleRetile(wsIndex, reason ? `verify-follow-${reason}` : 'verify-follow');
+    }
+
     // Only ever draw borders for the ACTIVE workspace (explicit perf requirement).
     // If wsIndex is not active, this becomes a no-op (or clears/hides if asked).
     #syncTileBorders(wsIndex, reason = '', isLiveResizeTick = false) {
@@ -1162,6 +1307,12 @@ class Application {
 
         const activeWs = this.#getActiveWorkspaceIndex();
         if (wsIndex !== activeWs) return;
+ 
+        // v0.682: do not draw borders during the short workspace-switch settling window.
+        if (Date.now() < (this.#borderSuppressUntil || 0)) {
+            try { this.#tileBorders.hide(); } catch (e) {}
+            return;
+        }
 
         const cfg = this.#getBorderConfig();
         if (!cfg.enabled || !this.#isTilingEnabled(wsIndex)) {
@@ -1173,31 +1324,81 @@ class Application {
 
         const wsKey = String(wsIndex);
         const byMon = this.#lastLayout?.[wsKey] || null;
-        if (!byMon) {
-            // No cached layout yet; keep hidden until first retile.
+
+        // Map current windows by key so we can:
+        // - drop overlays for closed/minimized windows even if lastLayout is stale
+        // - add overlays for hyprmon-managed floating/sticky windows
+        const wins = listAllMetaWindows().filter(w => w && w.window_type === Meta.WindowType.NORMAL);
+        const winByKey = new Map();
+        for (const w of wins) winByKey.set(String(this.#windowKey(w)), w);
+
+        // Build overlay entries:
+        // - tiled windows from lastLayout rects (gapped)
+        // - + hyprmon-managed floating/sticky windows using their frame rect
+        const entries = Object.create(null); // key -> { rect, anchor }
+
+        if (byMon) {
+            for (const monKey in byMon) {
+                const rbk = byMon?.[monKey]?.rectByKey || null;
+                if (!rbk) continue;
+                for (const k in rbk) {
+                    const key = String(k);
+                    const w = winByKey.get(key);
+                    if (!w) continue;
+                    if (this.#getWorkspaceIndexOfWindow(w) !== wsIndex) continue;
+                    if (this.#userFloatingKeys.has(key)) continue;
+                    if (this.#isForcedFloat(w)) continue;
+                    try {
+                        if (w.minimized || (typeof w.is_minimized === 'function' && w.is_minimized())) continue;
+                    } catch (e) {}
+
+                    let anchor = null;
+                    try { anchor = (typeof w.get_compositor_private === 'function') ? w.get_compositor_private() : null; } catch (e) {}
+                    if (!anchor) continue;
+                    entries[key] = { rect: rbk[key], anchor };
+                }
+            }
+        }
+
+        // v0.682: add overlays for hyprmon-managed floating/sticky windows on the active workspace.
+        for (const w of wins) {
+            const key = String(this.#windowKey(w));
+            if (!this.#userFloatingKeys.has(key)) continue;
+            try {
+                if (w.minimized || (typeof w.is_minimized === 'function' && w.is_minimized())) continue;
+            } catch (e) {}
+
+            const isSticky = this.#stickyKeys.has(key) ||
+                (() => { try { return (typeof w.is_on_all_workspaces === 'function' && w.is_on_all_workspaces()); } catch (e) { return false; } })();
+            const onWs = (this.#getWorkspaceIndexOfWindow(w) === wsIndex);
+            if (!isSticky && !onWs) continue;
+
+            let fr = null;
+            try { fr = w.get_frame_rect(); } catch (e) {}
+            if (!fr) continue;
+            let anchor = null;
+            try { anchor = (typeof w.get_compositor_private === 'function') ? w.get_compositor_private() : null; } catch (e) {}
+            if (!anchor) continue;
+
+            entries[key] = { rect: { x: fr.x, y: fr.y, width: fr.width, height: fr.height }, anchor };
+        }
+
+        const keys = Object.keys(entries);
+        if (!keys.length) {
             this.#tileBorders.hide();
             this.#tileBorders.clear();
             return;
         }
 
-        // Merge per-monitor rect maps into one rectByKey (stage coords).
-        const rectByKey = Object.create(null);
-        for (const monKey in byMon) {
-            const entry = byMon[monKey];
-            const rbk = entry && entry.rectByKey ? entry.rectByKey : null;
-            if (!rbk) continue;
-            for (const k in rbk) rectByKey[String(k)] = rbk[k];
-        }
-
         const fw = this.#getFocusWindow();
-        const focusedKey = fw ? this.#windowKey(fw) : null;
-        const focusInLayout = focusedKey && rectByKey[String(focusedKey)] ? String(focusedKey) : null;
+        const focusedKey = fw ? String(this.#windowKey(fw)) : null;
+        const focusInSet = (focusedKey && entries[focusedKey]) ? focusedKey : null;
 
         // During live resize ticks, do NOT animate overlays (keeps borders glued to edges).
         const animate = cfg.overlayAnimate && !isLiveResizeTick && cfg.overlayDur > 0;
 
         this.#tileBorders.show();
-        this.#tileBorders.sync(rectByKey, focusInLayout, {
+        this.#tileBorders.sync(entries, focusInSet, {
             activeWidth: cfg.activeW,
             inactiveWidth: cfg.inactiveW,
             activeColor: cfg.activeC,
@@ -1885,48 +2086,61 @@ class Application {
 
         // When a window goes away, reflow the workspace it was on.
         this.#safeConnect(metaWindow, 'unmanaged', () => {
+            const aws = this.#getActiveWorkspaceIndex();
             try { this.#setWindowFlags(this.#windowKey(metaWindow), false, false); } catch (e) {}
             if (lastWs !== null) this.#scheduleRetile(lastWs, 'window-unmanaged');
+            // v0.682: ensure overlays drop immediately for closed windows.
+            this.#scheduleBorderRefreshActive('unmanaged', 0);
+            // If the unmanaged window was on the active workspace, refresh overlays quickly.
+            this.#syncTileBorders(aws, 'window-unmanaged', false);
         });
 
         // When moved to/from workspace, reflow both sides.
         // (Most builds expose notify::workspace; if not, this is harmlessly skipped.)
         this.#safeConnect(metaWindow, 'notify::workspace', () => {
-            if (this.#isUserFloating(metaWindow)) { lastWs = this.#getWorkspaceIndexOfWindow(metaWindow); return; }
+            if (this.#isUserFloating(metaWindow)) {
+                lastWs = this.#getWorkspaceIndexOfWindow(metaWindow);
+                this.#scheduleBorderRefreshActive('floating-ws-change', 30);
+                return;
+            }
             const newWs = this.#getWorkspaceIndexOfWindow(metaWindow);
             if (newWs === lastWs) return;
 
-            if (lastWs !== null) this.#scheduleRetile(lastWs, 'window-left-workspace');
-            if (newWs !== null) this.#scheduleRetile(newWs, 'window-entered-workspace');
+            if (lastWs !== null && this.#isTilingEnabled(lastWs)) this.#scheduleRetileBurst(lastWs, 'window-left-workspace');
+            if (newWs !== null && this.#isTilingEnabled(newWs)) this.#scheduleRetileBurst(newWs, 'window-entered-workspace');
 
             lastWs = newWs;
         });
 
         // When moved between monitors (same workspace), reflow that workspace.
         this.#safeConnect(metaWindow, 'notify::monitor', () => {
-            if (this.#isUserFloating(metaWindow)) { lastMon = this.#getMonitorIndexOfWindow(metaWindow); return; }
+            if (this.#isUserFloating(metaWindow)) {
+                lastMon = this.#getMonitorIndexOfWindow(metaWindow);
+                this.#scheduleBorderRefreshActive('floating-mon-change', 30);
+                return;
+            }
             const newMon = this.#getMonitorIndexOfWindow(metaWindow);
             if (newMon === lastMon) return;
-            if (lastWs !== null) this.#scheduleRetile(lastWs, 'window-monitor-changed');
+            if (lastWs !== null && this.#isTilingEnabled(lastWs)) this.#scheduleRetileBurst(lastWs, 'window-monitor-changed');
             lastMon = newMon;
         });
 
         // Any geometry/state change should trigger retile on tiling-enabled workspaces.
         // (We suppress signals caused by our own tiling, and we ignore live grabs.)
         this.#safeConnect(metaWindow, 'position-changed', () => {
-            if (this.#isUserFloating(metaWindow)) return;
+            if (this.#isUserFloating(metaWindow)) { this.#scheduleBorderRefreshActive('floating-move', 30); return; }
             if (this.#maybeHandleLiveResize(metaWindow)) return;
             this.#onWindowNeedsRetile(metaWindow, 'window-position-changed');
         });
         this.#safeConnect(metaWindow, 'size-changed', () => {
-            if (this.#isUserFloating(metaWindow)) return;
+            if (this.#isUserFloating(metaWindow)) { this.#scheduleBorderRefreshActive('floating-resize', 30); return; }
             if (this.#maybeHandleLiveResize(metaWindow)) return;
             this.#onWindowNeedsRetile(metaWindow, 'window-size-changed');
         });
 
         // Some actions (minimize/maximize/fullscreen) may not reliably emit size/pos in all builds.
         this.#safeConnect(metaWindow, 'notify::minimized', () => {
-            if (this.#isUserFloating(metaWindow)) return;
+            if (this.#isUserFloating(metaWindow)) { this.#scheduleBorderRefreshActive('floating-minimize', 0); return; }
             this.#onWindowNeedsRetile(metaWindow, 'window-minimized-changed');
         });
         this.#safeConnect(metaWindow, 'notify::maximized-horizontally', () => {
@@ -1996,6 +2210,22 @@ class Application {
             this.#scheduleStackingSync('window-created');
         });
 
+        // v0.682: monitor layout changes can desync per-monitor BSP + lastLayout.
+        // Best-effort recovery: clear trees for enabled workspaces and re-tile bursts.
+        this.#safeConnect(global.display, 'monitors-changed', () => {
+            const enabledWs = Object.keys(this.#enabledWorkspaces)
+                .map(k => parseInt(k, 10))
+                .filter(n => Number.isFinite(n) && this.#enabledWorkspaces[n]);
+
+            for (const ws of enabledWs) this.#clearWorkspaceTrees(ws);
+            for (const ws of enabledWs) this.#scheduleRetileBurst(ws, 'monitors-changed');
+
+            // Also clear/suppress overlays while windows remap.
+            this.#clearTileBorders();
+            try { if (this.#tileBorders) this.#tileBorders.hide(); } catch (e) {}
+            this.#suppressTileBorders(260, 'monitors-changed');
+        });
+
         // Workspace switch: if the new workspace is enabled, enforce tiling.
         const wm = global.workspace_manager;
         if (wm) {
@@ -2005,6 +2235,7 @@ class Application {
                 // (explicitly clear to avoid any processing/drawing on inactive workspaces).
                 this.#clearTileBorders();
                 try { if (this.#tileBorders) this.#tileBorders.hide(); } catch (e) {}
+                this.#suppressTileBorders(220, 'workspace-switch');
 
                 if (this.#isTilingEnabled(wsIndex)) {
                     this.#scheduleRetileBurst(wsIndex, 'workspace-switch');
@@ -2227,6 +2458,9 @@ class Application {
 
         // v0.68: keep floating/sticky stacking consistent after geometry churn (throttled).
         this.#scheduleStackingSync('retile');
+
+        // v0.682: verify compositor applied our geometry (active ws only)
+        this.#scheduleVerifyWorkspace(wsIndex, 'retile');
     }
  
     // ----- v0.4 live resize helpers -----
@@ -2660,11 +2894,12 @@ class Application {
             return;
         }
 
-        // Manual reflow: run now (with debug logs), and also schedule a follow-up pass
-        // to smooth over apps that resist the first resize.
-        this.#retileWorkspaceNow(wsIndex, true);
-        this.#scheduleRetile(wsIndex, 'manual-retile');
-        this.#notify(`Workspace ${wsIndex + 1}: reflow applied`);
+        // v0.682: recovery semantics:
+        // - clear current workspace BSP (handles monitor add/remove desync + "messed up layouts")
+        // - rebuild via burst passes
+        this.#clearWorkspaceTrees(wsIndex);
+        this.#scheduleRetileBurst(wsIndex, 'manual-retile-recover');
+        this.#notify(`Workspace ${wsIndex + 1}: layout rebuilt (recovery retile)`);
     }
  
     #onDragEndInsert(metaWindow, ctx) {
