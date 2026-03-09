@@ -2,235 +2,227 @@
 
 <center><img src=icon.png width=200 height=200></center>
 
-**hyprmon** is a Linux Mint **Cinnamon (X11)** extension that adds a **toggleable, per-workspace auto‑tiling mode** inspired by Hyprland—without replacing Muffin or the rest of Cinnamon’s window manager.
-
-The design goal is “Hypr-ish ergonomics” while staying pragmatic and lightweight on Cinnamon.
+**hyprmon** is a Linux Mint **Cinnamon (X11)** extension that adds a **toggleable, per-workspace auto-tiling workflow** with Hyprland-like ergonomics, while staying inside Cinnamon/Muffin.
 
 - UUID: `hyprmon@og-yona`
-- Target: Cinnamon **6.2** (Linux Mint 22.3), **X11**
+- Target: Cinnamon `6.2` (Linux Mint 22.3), X11
+- Current version: **v0.6862**
 
 ---
 
-## Current state (v0.68)
+## Feature Overview
 
-hyprmon is usable as a daily-driver tiling workflow on Cinnamon.
+### 1. Core Tiling
+- Per-workspace tiling enable/disable
+- Per-monitor tiling (each monitor tiles its own windows)
+- Automatic reflow on open/close/move/monitor/workspace events
+- Work-area aware tiling (panel-aware)
+- Extra reserved space controls: `extraTopGap`, `extraBottomGap`
 
-### Core tiling
-- **Per-workspace tiling toggle**
-- **Per-monitor tiling** (each monitor tiles its own windows on that workspace)
-- **Automatic reflow** on window open/close, workspace moves, monitor changes
-- **Work area awareness**
-  - respects Cinnamon panels
-  - optional **extraTopGap / extraBottomGap**
-- **Gaps**
-  - `outerGap`, `innerGap`
-  - **per-workspace gaps toggle** (hotkey)
+### 2. BSP Layout Model
+- Persistent BSP trees in `~/.config/hyprmon@og-yona/tiling-state.json`
+- Stable window ordering and deterministic reconcile
+- Recovery actions:
+  - Manual retile/rebuild
+  - Per-workspace layout reset
 
-### Stateful layout (BSP)
-- **Persistent BSP tree** per workspace + monitor
-- Stored at:
-  - `~/.config/hyprmon@og-yona/tiling-state.json`
-- Supports predictable layouts and stable ordering across reflows.
+### 3. Sideviews (v0.684+)
+Each real workspace can contain multiple virtual horizontal sideviews:
+- One active sideview
+- Any number of inactive sideviews
+- Per-window side assignment
+- Separate BSP trees per sideview
 
-### “Hypr-ish” ergonomics
-- **Drag behavior (detach + insert-on-drop)**
-  - grab a tiled window → the layout closes the gap immediately
-  - drop onto a tile → the target tile is split and the window is inserted
-- **Live border resize adjusts neighbors (real-time)**
-  - resizing a tiled window updates BSP ratios live
-  - neighbors resize during the grab
-  - final retile snaps everything cleanly on release
-- **Keyboard ergonomics**
-  - focus neighbor (←/→/↑/↓)
-  - swap with neighbor
-  - grow / shrink active tile by moving the split boundary
-  - change shape with neighbor (toggle split axis for a symmetric pair)
+Behavior:
+- Switching sideview re-tiles active side only
+- Inactive side windows are parked/hidden (Muffin-safe fallback)
+- Focusing a window from another side redirects to that side
+- Side switch now focuses a window from the target side
 
-### Window modes
-- **Floating windows** (hyprmon-managed)
-  - excluded from tiling everywhere
-  - toggle per focused window
-  - “de-float all” drops them back into tiling (if enabled)
-- **Sticky windows**
-  - sticky = appears on all workspaces (MetaWindow.stick)
-  - sticky implies floating
-  - sticky windows are forced **always-on-top** (best effort)
-  - stacking is kept stable:
-    - floating windows sit above tiled windows
-    - sticky windows sit above floating windows
+### 4. Window Modes
+- Floating mode per window (not auto-tiled, stays on top of auto-tiled windows)
+- Sticky mode per window (sticky implies floating - also follows when changing workspace, always on top)
+- Defloat-all helper
+- Best-effort keep-above ordering for floating/sticky sets
 
-### Rules / safety clamps (v0.68)
-- **Forced floating rules** (`forceFloatingRules`)
-  - regex rules that match WM_CLASS or title
-  - matching windows are ignored for tiling (remain floating)
-  - useful for settings dialogs, special tools, etc.
-- **Minimum tile size clamp** (`minTileSizePx`)
-  - prevents keyboard resize and live border-resize from pushing any tile below the minimum
-  - if the current layout is already below the minimum (too many windows), the clamp relaxes to avoid getting stuck
+### 5. Forced Floating Rules (v0.68)
+Regex-based rules by class/title (`forceFloatingRules`) to keep selected apps out of tiling.
 
-### Optional visuals
-- **Tile border overlays** (active workspace only)
-- Optional overlay animation (safe)
-- Optional geometry animation (opt-in; may stutter on X11)
+### 6. Keyboard Ergonomics (v0.67 / v0.671)
+- Focus neighbor
+- Swap neighbor
+- Grow/Shrink active tile by split movement
+- Change shape with symmetric neighbor (axis toggle)
+
+### 7. Borders, Visuals, HUD
+- Tile border overlays (active workspace only)
+- Optional overlay animation / geometry animation
+- Custom Hyprmon HUD notifications (non-queued, overwrite behavior)
+  - configurable timeout
+  - configurable position (`top-center`, `bottom-center`, `active-monitor`)
+
+### 8. Auto Window Opacity (v0.686)
+Integrated from `auto-window-opacity` and adapted to hyprmon:
+- Focused/unfocused/fullscreen-maximized opacity levels
+- Optional dialog/utility participation
+- Refresh interval control
+- Global enable switch
+- **Per-workspace opacity toggle** (persisted)
 
 ---
 
 ## Install
 
-Cinnamon loads extensions from:
-
+Cinnamon extension path:
 - `~/.local/share/cinnamon/extensions/<uuid>/`
 
-### Option A: Install script (recommended)
-
-From the repo root:
-
+### Option A (recommended)
 ```bash
 chmod +x ./install-hyprmon.sh
 ./install-hyprmon.sh
 ```
 
-This copies the current folder into:
-
-- `~/.local/share/cinnamon/extensions/hyprmon@og-yona/`
-
-Dev mode (symlink the repo instead of copying):
-
+Dev mode symlink:
 ```bash
 ./install-hyprmon.sh --symlink
 ```
 
-Uninstall/remove:
-
+Remove:
 ```bash
 ./install-hyprmon.sh --remove
 ```
 
-### Option B: Manual install (copy)
-
+### Option B (manual copy)
 ```bash
 UUID="hyprmon@og-yona"
 DEST="${XDG_DATA_HOME:-$HOME/.local/share}/cinnamon/extensions/$UUID"
 mkdir -p "$(dirname "$DEST")"
 rsync -a --delete ./ "$DEST/" \
-  --exclude '.git/' --exclude '.github/' --exclude '.vscode/'
-```
-
-### Option C: Manual install (symlink, dev)
-
-```bash
-UUID="hyprmon@og-yona"
-DEST="${XDG_DATA_HOME:-$HOME/.local/share}/cinnamon/extensions/$UUID"
-rm -rf "$DEST"
-ln -s "$(pwd)" "$DEST"
+  --exclude '.git/' --exclude '.github/' --exclude '.vscode/' --exclude 'auto-window-opacity/'
 ```
 
 ---
 
 ## Enable / Reload
 
-1) Enable:
-- **System Settings → Extensions → hyprmon → Enable**
+1. Enable: **System Settings -> Extensions -> hyprmon -> Enable**
+2. Configure: **System Settings -> Extensions -> hyprmon -> Configure**
 
-2) Configure:
-- **System Settings → Extensions → hyprmon → Configure**
-
-If Cinnamon doesn’t pick up changes immediately (most likely needs cinnamon restart):
-- Disable+Enable the extension in the Extensions UI, or
-- Restart Cinnamon (X11): **Alt+F2 → `r` → Enter** (or `cinnamon --replace`), or
+If changes do not apply:
+- Disable + Enable extension, or
+- Restart Cinnamon on X11 (`Alt+F2`, then `r`), or
 - Log out/in.
 
 ---
 
-## Default hotkeys
+## Default Hotkeys
 
-(Defaults are defined in `settings-schema.json`.)
+### Workspace / Layout
+- Toggle tiling: `Super+T`
+- Manual retile: `Super+Shift+T`
+- Reset layout: `Super+Shift+R`
+- Toggle gaps (workspace): `Super+G`
 
-### Core
-- Toggle tiling: **Super + T**
-- Tile now (manual reflow): **Super + Shift + T**
-- Reset layout: **Super + Shift + R**
-- Toggle gaps (per workspace): **Super + G**
+### Sideviews
+- Previous side: `Super+Page_Up`
+- Next side: `Super+Page_Down`
+- Move focused window to previous side: `Super+Shift+Page_Up`
+- Move focused window to next side: `Super+Shift+Page_Down`
 
-### Floating / sticky
-- Toggle floating: **Super + V**
-- De-float all: **Super + Shift + V**
-- Toggle sticky: **Super + S**
+### Floating / Sticky
+- Toggle floating: `Super+V`
+- Defloat all: `Super+Shift+V`
+- Toggle sticky: `Super+S`
 
-### Keyboard navigation / layout editing
-- Focus neighbor: **Super + Shift + Arrow**
-- Swap with neighbor: **Super + Alt + Arrow**
-- Grow active tile: **Super + Ctrl + Arrow**
-- Shrink active tile: **Super + Ctrl + Shift + Arrow**
-- Change shape with neighbor: **Super + Ctrl + Alt + Arrow**
+### Auto Opacity
+- Toggle opacity on current workspace: `Super+O`
+
+### Keyboard Tiling Ops
+- Focus neighbor: `Super+Shift+Arrow`
+- Swap neighbor: `Super+Alt+Arrow`
+- Grow tile: `Super+Ctrl+Arrow`
+- Shrink tile: `Super+Ctrl+Shift+Arrow`
+- Change shape: `Super+Ctrl+Alt+Arrow`
+
+(All defaults are configurable in `settings-schema.json`.)
 
 ---
 
-## Forced floating rules
+## Forced Floating Rules
 
 Setting: `forceFloatingRules`
 
 Format:
-- comma-separated or newline-separated regex rules
+- comma/newline separated regex lines
 - optional prefixes:
   - `class:<regex>`
   - `title:<regex>`
-- without prefix: matches both class and title
-- lines starting with `#` are comments
+- no prefix: matches both class and title
+- `#` line prefix = comment
 
-Examples:
-
+Example:
 ```text
-# Keep control centers / settings floating
+# Keep settings apps floating
 class:^(org\.gnome\.Settings|gnome-control-center)$
 
-# Match common “Preferences” windows by title
+# Generic title-based rule
 title:Preferences
-title:Settings
 ```
+
+---
+
+## State File
+
+Persistent state:
+- `~/.config/hyprmon@og-yona/tiling-state.json`
+
+Includes:
+- Workspace tiling trees
+- Sideview active side / per-window side mapping
+- Workspace flags (`gapsDisabled`, `opacityDisabled`)
+- Window flags (`floating`, `sticky`)
 
 ---
 
 ## Debugging
 
-### Looking Glass logs
-- Press **Alt+F2**
-- Run: `lg`
-- Open the **Logs** tab
+### Looking Glass
+- `Alt+F2`, run `lg`, check **Logs** tab.
 
-### State file
-- `~/.config/hyprmon@og-yona/tiling-state.json`
-
-If behavior gets odd:
-- Use **Reset layout** hotkey (default `Super+Shift+R`)
-- Or delete the state file to reset everything.
+### Quick recovery
+- Use layout reset hotkey (`Super+Shift+R`) on affected workspace
+- Or delete state file and re-enable extension
 
 ---
 
-## Known limitations & Issues/bugs
+## Limitations
 
-- X11 + Muffin sometimes ignore the first `move_resize_frame()` right after reload/startup for some apps.
-  - hyprmon mitigates this with short “retile bursts” and a startup healing pass.
-- No Wayland support (Cinnamon Wayland is experimental and uses different APIs).
-- Dialogs/popups are intentionally left floating by heuristic (transient/attached dialog checks).
-- Bug: Windows can be resized "too large" causing other windows not to shrink as small as intended, which may break the tiling behaviour on the workspace. 
-- Bug: Overlays/borders are drawn from tiled windows on top of floating/sticky windows (and also over popups/prompts)
-- Bug: Floating/sticky windows missing overlays (should draw them, as/if managed by hyprmon tiler (they are managed by hyprmon, if they are floated/stickied from auto-tiled workspace))
-- Bug: Minimized/closed windows keep drawing the overlay/borders even when window not on the desktop anymore
-- Bug: When moving windows from workspace to workspace, occasionally auto-tiling does not correctly resize the window on final target workspace.
-- Bug: Layouts & Actual window sizes get mixed up occasionally (add/remove monitors?) - the "Force re-tile windows on the current workspace" should reset current workspaces layout, to allow recovery from "messed up layouts".
+- X11/Muffin behavior can vary by app/toolkit; hyprmon includes fallback passes for reliability.
+- Wayland is not supported.
+- Some transient/pop-up window types are intentionally excluded from tiling/opacity logic.
+
+---
+
+## Architecture (Current)
+
+Main runtime is orchestrated by `application.js`, with extracted modules:
+- `side-state.js`
+- `sideviews.js`
+- `window-grabs.js`
+- `window-opacity.js`
+- `hotkeys.js`
+- `hud-notifier.js`
+- `forced-float-rules.js`
 
 ---
 
 ## Credits
 
-hyprmon started from patterns and WM integration ideas inspired by **Fancy Tiles**:
+hyprmon was originally inspired by Fancy Tiles integration patterns:
 - https://github.com/BasGeertsema/fancytiles
-
-The current codebase is focused on BSP tiling + Hyprland-like ergonomics on Cinnamon X11.
 
 ---
 
 ## License
 
-GPL-3.0 (following the upstream inspiration’s approach).
+GPL-3.0

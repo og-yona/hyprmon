@@ -1,9 +1,7 @@
 {
-  "_separator_visuals": { "type": "separator" },
-  "_header_basic_settings": {
+  "_header_general": {
     "type": "header",
-    "description": "Basic settings & Hotkeys",
-    "tooltip": "More window/tile management related hotkeys at the bottom section of settings."
+    "description": "General Workspace Controls"
   },
   "defaultEnabledWorkspaces": {
     "type": "entry",
@@ -20,7 +18,7 @@
     "type": "keybinding",
     "default": "<Super><Shift>t",
     "description": "Force re-tile windows on the current workspace (manual reflow)"
-  }, 
+  },
   "tilingResetHotkey": {
     "type": "keybinding",
     "default": "<Super><Shift>r",
@@ -31,28 +29,36 @@
     "default": "<Super>g",
     "description": "Toggle hyprmon gaps on/off on the current workspace (tiling-enabled only)"
   },
+
+  "_header_windowmodes": {
+    "type": "header",
+    "description": "Floating and Sticky Windows (v064-65)"
+  },
+  "floatToggleHotkey": {
+    "type": "keybinding",
+    "default": "<Super>v",
+    "description": "Toggle floating for focused window (works on tiling-enabled workspaces too)"
+  },
+  "defloatAllHotkey": {
+    "type": "keybinding",
+    "default": "<Super><Shift>v",
+    "description": "De-float all hyprmon floating/sticky windows (drops them back into tiling if enabled)"
+  },
+  "stickyToggleHotkey": {
+    "type": "keybinding",
+    "default": "<Super>s",
+    "description": "Toggle sticky (all workspaces) for focused window (also marks it floating)"
+  },
+  "forceFloatingRules": {
+    "type": "entry",
+    "description": "Force floating windows (optional rules)",
+    "tooltip": "Comma/newline-separated regex rules. If a rule matches a window's WM_CLASS or title, hyprmon will IGNORE it for tiling (it remains floating). Prefixes: class:<regex> or title:<regex>. Without prefix, matches both. Lines starting with # are comments.",
+    "default": ""
+  },
+
   "_header_sideviews": {
     "type": "header",
-    "description": "Sideviews (v2)"
-  },
-  "_header_hud_notify": {
-    "type": "header",
-    "description": "Hyprmon HUD notifications"
-  },
-  "hudNotifyTimeoutMs": {
-    "type": "spinbutton",
-    "description": "HUD notification timeout (ms)",
-    "tooltip": "How long the custom hyprmon notification banner stays visible.",
-    "default": 900,
-    "min": 120,
-    "max": 5000,
-    "step": 20
-  },
-  "hudNotifyPosition": {
-    "type": "entry",
-    "description": "HUD notification position",
-    "tooltip": "Accepted values: top-center, bottom-center, active-monitor. Invalid values fall back to top-center.",
-    "default": "top-center"
+    "description": "Sideviews (v0684)"
   },
   "sideviewPrevHotkey": {
     "type": "keybinding",
@@ -74,14 +80,20 @@
     "default": "<Super><Shift>Page_Down",
     "description": "Move focused window to next sideview"
   },
+
   "_header_auto_opacity": {
     "type": "header",
-    "description": "Auto window opacity"
+    "description": "Auto Window Opacity (v0.686)"
   },
   "autoOpacityEnabled": {
     "type": "checkbox",
     "default": false,
     "description": "Enable automatic window opacity adjustment"
+  },
+  "opacityToggleHotkey": {
+    "type": "keybinding",
+    "default": "<Super>o",
+    "description": "Toggle auto-opacity on/off for the current workspace"
   },
   "opacityFullscreenMaximized": {
     "type": "spinbutton",
@@ -131,46 +143,24 @@
     "description": "Also affect utility windows",
     "dependency": "autoOpacityEnabled"
   },
-  "opacityToggleHotkey": {
-    "type": "keybinding",
-    "default": "<Super>o",
-    "description": "Toggle auto-opacity on/off for the current workspace"
-  },
 
-  "_header_window_modes": {
+  "_header_workarea_gaps": {
     "type": "header",
-    "description": "Window modes (v0.64 & v0.65)"
-  },
-  "floatToggleHotkey": {
-    "type": "keybinding",
-    "default": "<Super>v",
-    "description": "Toggle floating for focused window (works on tiling-enabled workspaces too)"
-  },
-  "defloatAllHotkey": {
-    "type": "keybinding",
-    "default": "<Super><Shift>v",
-    "description": "De-float all hyprmon floating/sticky windows (drops them back into tiling if enabled)"
-  },
-  "stickyToggleHotkey": {
-    "type": "keybinding",
-    "default": "<Super>s",
-    "description": "Toggle sticky (all workspaces) for focused window (also marks it floating)"
-  },
-  "forceFloatingRules": {
-    "type": "entry",
-    "description": "Force floating windows (optional rules)",
-    "tooltip": "Comma/newline-separated regex rules. If a rule matches a window's WM_CLASS or title, hyprmon will IGNORE it for tiling (it remains floating). Prefixes: class:<regex> or title:<regex>. Without prefix, matches both. Lines starting with # are comments.",
-    "default": ""
-  },
-
-  "_header_gaps": {
-    "type": "header",
-    "description": "Gaps"
+    "description": "Work Area and Gaps"
   },
   "outerGap": {
     "type": "spinbutton",
     "description": "Outer gap (px) — distance from screen edge",
     "tooltip": "Applied between the usable work area (panels excluded) and the tiled window region.",
+    "default": 18,
+    "min": 0,
+    "max": 80,
+    "step": 1
+  },
+  "innerGap": {
+    "type": "spinbutton",
+    "description": "Inner gap (px) — distance between tiled windows",
+    "tooltip": "Applied between adjacent tiled windows.",
     "default": 18,
     "min": 0,
     "max": 80,
@@ -194,22 +184,14 @@
     "max": 300,
     "step": 1
   },
-  "innerGap": {
-    "type": "spinbutton",
-    "description": "Inner gap (px) — distance between tiled windows",
-    "tooltip": "Applied between adjacent tiled windows.",
-    "default": 18,
-    "min": 0,
-    "max": 80,
-    "step": 1
-  },
-  "_header_borders": {
+
+  "_header_tile_borders": {
     "type": "header",
-    "description": "Tile borders (overlays)"
+    "description": "Tile Borders and Overlay Visuals"
   },
   "tileBordersEnabled": {
     "type": "checkbox",
-    "default": true,
+    "default": false,
     "description": "Draw tile border overlays on tiling-enabled workspaces"
   },
   "tileBorderActiveWidth": {
@@ -246,6 +228,16 @@
     "default": "rgba(120,120,120,0.45)",
     "dependency": "tileBordersEnabled"
   },
+  "tileBorderRadius": {
+    "type": "spinbutton",
+    "description": "Tile border corner radius (px)",
+    "tooltip": "Rounded corners for the border overlays (visual only).",
+    "default": 4,
+    "min": 0,
+    "max": 60,
+    "step": 1,
+    "dependency": "tileBordersEnabled"
+  },
   "floatStickyBordersEnabled": {
     "type": "checkbox",
     "default": true,
@@ -266,20 +258,30 @@
     "default": "rgba(120,30,120,0.82)",
     "dependency": "floatStickyBordersEnabled"
   },
-  "tileBorderRadius": {
+
+  "_header_hud_notify": {
+    "type": "header",
+    "description": "Hyprmon HUD Notifications"
+  },
+  "hudNotifyTimeoutMs": {
     "type": "spinbutton",
-    "description": "Tile border corner radius (px)",
-    "tooltip": "Rounded corners for the border overlays (visual only).",
-    "default": 4,
-    "min": 0,
-    "max": 60,
-    "step": 1,
-    "dependency": "tileBordersEnabled"
+    "description": "HUD notification timeout (ms)",
+    "tooltip": "How long the custom hyprmon notification banner stays visible.",
+    "default": 900,
+    "min": 120,
+    "max": 5000,
+    "step": 20
+  },
+  "hudNotifyPosition": {
+    "type": "entry",
+    "description": "HUD notification position",
+    "tooltip": "Accepted values: top-center, bottom-center, active-monitor. Invalid values fall back to top-center.",
+    "default": "top-center"
   },
 
   "_header_new_windows": {
     "type": "header",
-    "description": "New window placement (v0.63)"
+    "description": "New Window Placement (v0.63)"
   },
   "newWindowPointerModifier": {
     "type": "entry",
@@ -290,7 +292,7 @@
 
   "_header_transitions": {
     "type": "header",
-    "description": "Optional visuals / transitions (best effort on X11)"
+    "description": "Optional Transitions (best effort on X11)"
   },
   "overlayAnimate": {
     "type": "checkbox",
@@ -323,9 +325,9 @@
     "dependency": "geometryAnimate"
   },
 
-  "_header_hotkeys_067": {
+  "_header_kbd_focus_swap": {
     "type": "header",
-    "description": "Keyboard focus/swap/resize (v0.67)"
+    "description": "Keyboard Focus and Swap (v0.67)"
   },
   "focusLeftHotkey": {
     "type": "keybinding",
@@ -347,12 +349,6 @@
     "default": "<Super><Shift>Down",
     "description": "Focus tile below"
   },
-
-  "_header_spacer_2": {
-    "type": "header",
-    "description": ""
-  },
-
   "swapLeftHotkey": {
     "type": "keybinding",
     "default": "<Super><Alt>Left",
@@ -374,32 +370,10 @@
     "description": "Swap with tile below"
   },
 
-  "changeShapeLeftHotkey": {
-    "type": "keybinding",
-    "default": "<Super><Control><Alt>Left",
-    "description": "Change shape with left neighbor (toggle split axis for a symmetric pair)"
-  },
-  "changeShapeRightHotkey": {
-    "type": "keybinding",
-    "default": "<Super><Control><Alt>Right",
-    "description": "Change shape with right neighbor (toggle split axis for a symmetric pair)"
-  },
-  "changeShapeUpHotkey": {
-    "type": "keybinding",
-    "default": "<Super><Control><Alt>Up",
-    "description": "Change shape with upper neighbor (toggle split axis for a symmetric pair)"
-  },
-  "changeShapeDownHotkey": {
-    "type": "keybinding",
-    "default": "<Super><Control><Alt>Down",
-    "description": "Change shape with lower neighbor (toggle split axis for a symmetric pair)"
-  },
-
-  "_header_spacer_3": {
+  "_header_kbd_resize_shape": {
     "type": "header",
-    "description": ""
+    "description": "Keyboard Resize and Shape (v0.67 - v0.671)"
   },
-
   "resizeStepPx": {
     "type": "spinbutton",
     "description": "Keyboard resize step (px)",
@@ -418,7 +392,6 @@
     "max": 800,
     "step": 5
   },
-
   "growLeftHotkey": {
     "type": "keybinding",
     "default": "<Super><Control>Left",
@@ -439,7 +412,6 @@
     "default": "<Super><Control>Down",
     "description": "Grow active tile from bottom edge (takes space from lower neighbor)"
   },
-
   "shrinkLeftHotkey": {
     "type": "keybinding",
     "default": "<Super><Control><Shift>Left",
@@ -459,5 +431,25 @@
     "type": "keybinding",
     "default": "<Super><Control><Shift>Down",
     "description": "Shrink active tile from bottom edge"
+  },
+  "changeShapeLeftHotkey": {
+    "type": "keybinding",
+    "default": "<Super><Control><Alt>Left",
+    "description": "Change shape with left neighbor (toggle split axis for a symmetric pair)"
+  },
+  "changeShapeRightHotkey": {
+    "type": "keybinding",
+    "default": "<Super><Control><Alt>Right",
+    "description": "Change shape with right neighbor (toggle split axis for a symmetric pair)"
+  },
+  "changeShapeUpHotkey": {
+    "type": "keybinding",
+    "default": "<Super><Control><Alt>Up",
+    "description": "Change shape with upper neighbor (toggle split axis for a symmetric pair)"
+  },
+  "changeShapeDownHotkey": {
+    "type": "keybinding",
+    "default": "<Super><Control><Alt>Down",
+    "description": "Change shape with lower neighbor (toggle split axis for a symmetric pair)"
   }
 }

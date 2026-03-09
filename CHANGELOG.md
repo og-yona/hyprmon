@@ -1,6 +1,26 @@
 # CHANGELOG
 Changelog for hyprmon -project.
 
+## v0.6862 Rewrite README & reorganize settings.
+### Updated Files
+
+  1. Rewritten README for current feature set and version:
+  - README.md
+  2. Reorganized settings schema with clearer logical sections/subheaders (keys unchanged):
+  - settings-schema.json
+  3. Bumped extension version to v0.6862 and updated last-edited:
+  - metadata.json
+
+### Notes
+  - README now reflects current architecture/modules and features including:
+      - sideviews
+      - HUD notifications
+      - refactored module layout
+      - integrated auto-opacity with per-workspace toggle
+  - Validated that all settings keys referenced by code still exist after schema
+    reorganization.
+  - JSON and JS syntax checks passed.
+
 ## v0.686 Add per workspace toggleable auto-window-opacity
 
 ### Added/Updated
