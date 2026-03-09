@@ -1,6 +1,64 @@
 # CHANGELOG
 Changelog for hyprmon -project.
 
+## v0.6845 Hyprmon now uses its own in-extension notification HUD instead of Cinnamon
+  queued notifications.
+
+  What changed in application.js:
+
+  - Replaced Main.notify(...) path in #notify(...) with a custom St overlay banner.
+  - Added overwrite behavior:
+      - new message updates same HUD
+      - prior timer is canceled
+      - display duration resets (currently 900ms)
+  - Added cleanup in destroy() so HUD/timer are always removed.
+  - Kept Main.notify only as a fallback if HUD creation fails.
+
+  Result:
+
+  - No Cinnamon notification queue spam.
+  - Fast actions now show only the latest message, immediately.
+add two settings for this HUD:
+
+ Two settings for HUD:
+  1. timeout (ms)
+  2. position (top-center, bottom-center, active-monitor).
+
+## v0.6844 Avoid minimize animation when parking off-screen
+  - Primary fallback for “can’t park off-screen” is now compositor actor hide/show:
+      - hide inactive-side window with actor.hide()
+      - restore with actor.show()
+  - Minimize/unminimize is kept only as last resort if actor hide/show isn’t available.
+  - Tracks per-window hidden mode (actor vs minimize) to restore correctly.
+  - Cleanup on extension disable restores any side-hidden windows so none remain hidden.
+
+## v0.6843 Fix sideview focus when alt-tab/click
+Now when a focused window belongs to a different side on the active workspace:
+
+  1. Hyprmon detects it in notify::focus-window.
+  2. It switches activeSide to that window’s side.
+  3. Restores that side’s windows and parks/hides inactive sides.
+  4. Retiles/border-refreshes the workspace.
+
+## v0.6842 Fixes
+Muffin can clamp “off-screen” moves back on-screen, which is why parking is unreliable by itself.
+
+  Implemented a stronger fallback in application.js:
+
+  - If a parked window is still too visible after move, Hyprmon now hides it via minimize().
+  - When that side becomes active again, Hyprmon restores it via unminimize(...).
+  - Hidden-by-sideview windows are tracked separately so minimize signals don’t cause retile
+    churn.
+
+## v0.6841 Fixes
+• Patched the likely root cause in parking behavior in application.js:
+
+  1. Parking now uses monitor-local geometry, not global far-off coordinates.
+  2. Parked windows are moved with move_frame(...) (not move_resize_frame(...)) to avoid WM re-placement side
+     effects.
+  3. Parking keeps a tiny 8px sliver on the source monitor edge so Muffin doesn’t shove windows onto primary.
+  4. Restore also uses move_frame(...) to reduce cross-monitor jumping.
+
 ## v0.684 Sideviews
 • Implemented Option A sideviews across the codebase.
 

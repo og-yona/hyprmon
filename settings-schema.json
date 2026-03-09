@@ -35,6 +35,25 @@
     "type": "header",
     "description": "Sideviews (v2)"
   },
+  "_header_hud_notify": {
+    "type": "header",
+    "description": "Hyprmon HUD notifications"
+  },
+  "hudNotifyTimeoutMs": {
+    "type": "spinbutton",
+    "description": "HUD notification timeout (ms)",
+    "tooltip": "How long the custom hyprmon notification banner stays visible.",
+    "default": 900,
+    "min": 120,
+    "max": 5000,
+    "step": 20
+  },
+  "hudNotifyPosition": {
+    "type": "entry",
+    "description": "HUD notification position",
+    "tooltip": "Accepted values: top-center, bottom-center, active-monitor. Invalid values fall back to top-center.",
+    "default": "top-center"
+  },
   "sideviewPrevHotkey": {
     "type": "keybinding",
     "default": "<Super>Page_Up",

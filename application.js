@@ -101,8 +101,17 @@ class Application {
     // v0.62: opt-in geometry animation timers (key -> sourceId)
     #geomAnimByKey = Object.create(null);
 
+    // lightweight in-extension notification HUD (overwrites previous message)
+    #hudBox = null;
+    #hudLabel = null;
+    #hudTimer = 0;
+
     // v2 sideviews: remembered geometry before parking off-screen (key -> frameRect)
     #parkRestoreRectByKey = Object.create(null);
+    // v2 sideviews: windows hidden by hyprmon because parking was clamped by WM
+    #sideHiddenKeys = new Set();
+    #sideHiddenModeByKey = Object.create(null); // key -> 'actor' | 'minimize'
+    #sideFocusRedirectUntil = 0;
  
     // v0.63: remember last focused tile per workspace (and monitor) for "split active window"
     // wsIndex -> { key, monIndex, ts }
@@ -231,6 +240,16 @@ class Application {
 
         try { if (this.#tileBorders) this.#tileBorders.destroy(); } catch (e) {}
         this.#tileBorders = null;
+
+        if (this.#hudTimer) {
+            try { Mainloop.source_remove(this.#hudTimer); } catch (e) {}
+            this.#hudTimer = 0;
+        }
+        try {
+            if (this.#hudBox) this.#hudBox.destroy();
+        } catch (e) {}
+        this.#hudBox = null;
+        this.#hudLabel = null;
  
         // v0.682: cleanup border timers
         if (this.#borderRefreshTimer) {
@@ -263,6 +282,23 @@ class Application {
                 if (this.#stickyKeys.has(k)) {
                     try { if (typeof w.unstick === 'function') w.unstick(); } catch (e) {}
                 }
+                // v2 sideviews: ensure we don't leave windows hidden on extension disable.
+                if (this.#sideHiddenKeys.has(k)) {
+                    const mode = String(this.#sideHiddenModeByKey[k] || '');
+                    if (mode === 'actor') {
+                        try {
+                            const actor = (typeof w.get_compositor_private === 'function') ? w.get_compositor_private() : null;
+                            if (actor && typeof actor.show === 'function') actor.show();
+                        } catch (e) {}
+                    } else if (mode === 'minimize') {
+                        try {
+                            if (typeof w.unminimize === 'function') {
+                                const t = (typeof global.get_current_time === 'function') ? global.get_current_time() : Date.now();
+                                w.unminimize(t);
+                            }
+                        } catch (e) {}
+                    }
+                }
             }
         } catch (e) {}
         this.#hyprmonAboveKeys.clear();
@@ -284,6 +320,8 @@ class Application {
 
         this.#trackedSeq.clear();
         try { this.#floatingWindowKeys.clear(); } catch (e) {}
+        try { this.#sideHiddenKeys.clear(); } catch (e) {}
+        this.#sideHiddenModeByKey = Object.create(null);
     }
  
     #safeConnect(obj, signalName, cb) {
@@ -466,14 +504,99 @@ class Application {
         }
     }
 
+    #ensureHud() {
+        if (this.#hudBox && this.#hudLabel) return;
+        try {
+            const box = new St.BoxLayout({
+                vertical: false,
+                reactive: false,
+                visible: false
+            });
+            box.set_style(
+                'padding: 8px 12px; ' +
+                'border-radius: 10px; ' +
+                'background-color: rgba(16,16,16,0.86);'
+            );
+            const label = new St.Label({
+                text: '',
+                y_align: Clutter.ActorAlign.CENTER
+            });
+            label.set_style('color: rgba(245,245,245,0.98); font-size: 11pt; font-weight: 600;');
+            box.add_child(label);
+            Main.uiGroup.add_child(box);
+            this.#hudBox = box;
+            this.#hudLabel = label;
+        } catch (e) {
+            this.#hudBox = null;
+            this.#hudLabel = null;
+        }
+    }
+
+    #positionHud() {
+        if (!this.#hudBox) return;
+        try {
+            const cfg = this.#getHudConfig();
+            let mon = global.display.get_primary_monitor();
+            if (cfg.position === 'active-monitor') {
+                const fw = this.#getFocusWindow();
+                const m = this.#getMonitorIndexOfWindow(fw);
+                if (m !== null && Number.isFinite(m)) mon = Number(m);
+            }
+            const r = global.display.get_monitor_geometry(mon);
+            const w = this.#hudBox.get_width();
+            const x = r.x + Math.floor((r.width - w) / 2);
+            const y = (cfg.position === 'bottom-center')
+                ? (r.y + r.height - 56 - this.#hudBox.get_height())
+                : (r.y + 56);
+            this.#hudBox.set_position(x, y);
+        } catch (e) {}
+    }
+
+    #getHudConfig() {
+        const sd = this.#settings?.settingsData || Object.create(null);
+        const rawMs = Number(sd.hudNotifyTimeoutMs?.value ?? 900);
+        const timeoutMs = Math.max(120, Math.min(5000, Math.floor(Number.isFinite(rawMs) ? rawMs : 900)));
+        const rawPos = String(sd.hudNotifyPosition?.value || 'top-center').trim().toLowerCase();
+        const position = (rawPos === 'bottom-center' || rawPos === 'active-monitor')
+            ? rawPos
+            : 'top-center';
+        return { timeoutMs, position };
+    }
+
     #notify(message) {
+        const text = String(message || '').trim();
+        if (!text) return;
+
+        this.#ensureHud();
+        if (this.#hudBox && this.#hudLabel) {
+            try {
+                this.#hudLabel.set_text(text);
+                this.#hudBox.show();
+                this.#hudBox.opacity = 255;
+                this.#hudBox.queue_relayout();
+                this.#positionHud();
+                if (this.#hudTimer) {
+                    Mainloop.source_remove(this.#hudTimer);
+                    this.#hudTimer = 0;
+                }
+                const cfg = this.#getHudConfig();
+                this.#hudTimer = Mainloop.timeout_add(cfg.timeoutMs, () => {
+                    this.#hudTimer = 0;
+                    try { if (this.#hudBox) this.#hudBox.hide(); } catch (e) {}
+                    return false;
+                });
+                return;
+            } catch (e) {}
+        }
+
+        // fallback if HUD creation fails
         try {
             if (Main.notify) {
-                Main.notify('hyprmon', message);
+                Main.notify('hyprmon', text);
                 return;
             }
         } catch (e) {}
-        global.log(`hyprmon: ${message}`);
+        global.log(`hyprmon: ${text}`);
     }
 
     #getActiveWorkspaceIndex() {
@@ -680,21 +803,36 @@ class Application {
         const active = Math.max(0, Math.floor(Number(activeSide) || 0));
         if (side === active) return null;
 
-        const b = this.#getGlobalMonitorBounds();
-        const stride = this.#getParkingStride();
         let fr = null;
         try { fr = metaWindow.get_frame_rect(); } catch (e) {}
-        if (!fr) fr = { x: b.left, y: b.top, width: 900, height: 700 };
+        if (!fr) fr = { x: 0, y: 0, width: 900, height: 700 };
 
+        // IMPORTANT:
+        // Muffin often clamps fully off-desktop coordinates back to a real monitor,
+        // which caused windows to collapse/stack on primary. Keep a tiny sliver
+        // on the window's *current monitor* so the WM keeps it logically there.
+        let mon = null;
+        try {
+            const monIndex = (typeof metaWindow.get_monitor === 'function') ? metaWindow.get_monitor() : null;
+            if (monIndex !== null && monIndex !== undefined) mon = global.display.get_monitor_geometry(monIndex);
+        } catch (e) {}
+        if (!mon) {
+            const b = this.#getGlobalMonitorBounds();
+            mon = { x: b.left, y: b.top, width: b.maxWidth, height: b.maxHeight };
+        }
+
+        const sliver = 8; // visible strip to avoid WM re-placement to primary monitor
         const delta = Math.abs(side - active);
-        const margin = 200;
-        const y = Math.max(b.top + 20, Math.min(fr.y, b.bottom - Math.max(50, fr.height) - 20));
+        const laneNudge = Math.min(80, Math.max(0, (delta - 1) * 20));
+        const yMin = mon.y;
+        const yMax = mon.y + Math.max(0, mon.height - Math.max(1, fr.height));
+        const y = Math.max(yMin, Math.min(fr.y, yMax));
 
         if (side < active) {
-            const x = b.left - (delta * stride) - fr.width - margin;
+            const x = (mon.x - fr.width + sliver) - laneNudge;
             return { x, y, width: fr.width, height: fr.height };
         }
-        const x = b.right + (delta * stride) + margin;
+        const x = (mon.x + mon.width - sliver) + laneNudge;
         return { x, y, width: fr.width, height: fr.height };
     }
 
@@ -702,11 +840,30 @@ class Application {
         if (!metaWindow) return false;
         const k = String(this.#windowKey(metaWindow));
         if (this.#movingWindowKeys.has(k) || this.#resizingWindowKeys.has(k)) return false;
+        if (this.#sideHiddenKeys.has(k)) {
+            const mode = String(this.#sideHiddenModeByKey[k] || '');
+            if (mode === 'actor') {
+                try {
+                    const actor = (typeof metaWindow.get_compositor_private === 'function') ? metaWindow.get_compositor_private() : null;
+                    if (actor && typeof actor.show === 'function') actor.show();
+                } catch (e) {}
+            } else {
+                try {
+                    if (typeof metaWindow.unminimize === 'function') {
+                        const t = (typeof global.get_current_time === 'function') ? global.get_current_time() : Date.now();
+                        metaWindow.unminimize(t);
+                    }
+                } catch (e) {}
+            }
+            this.#sideHiddenKeys.delete(k);
+            delete this.#sideHiddenModeByKey[k];
+        }
         const r = this.#parkRestoreRectByKey[k] || null;
         if (!r) return false;
         try {
             this.#suppressWindowGeomSignals(metaWindow, 450);
-            metaWindow.move_resize_frame(false, r.x, r.y, r.width, r.height);
+            if (typeof metaWindow.move_frame === 'function') metaWindow.move_frame(false, r.x, r.y);
+            else metaWindow.move_resize_frame(false, r.x, r.y, r.width, r.height);
             delete this.#parkRestoreRectByKey[k];
             return true;
         } catch (e) {}
@@ -739,7 +896,47 @@ class Application {
 
         try {
             this.#suppressWindowGeomSignals(metaWindow, 450);
-            metaWindow.move_resize_frame(false, pr.x, pr.y, pr.width, pr.height);
+            if (typeof metaWindow.move_frame === 'function') metaWindow.move_frame(false, pr.x, pr.y);
+            else metaWindow.move_resize_frame(false, pr.x, pr.y, pr.width, pr.height);
+
+            // If WM clamps back on-screen, force-hide via minimize as fallback.
+            let parkedOk = false;
+            try {
+                const fr2 = metaWindow.get_frame_rect();
+                const monIndex = (typeof metaWindow.get_monitor === 'function') ? metaWindow.get_monitor() : null;
+                const mon = (monIndex !== null && monIndex !== undefined) ? global.display.get_monitor_geometry(monIndex) : null;
+                if (fr2 && mon) {
+                    const left = Math.max(fr2.x, mon.x);
+                    const right = Math.min(fr2.x + fr2.width, mon.x + mon.width);
+                    const top = Math.max(fr2.y, mon.y);
+                    const bottom = Math.min(fr2.y + fr2.height, mon.y + mon.height);
+                    const visW = Math.max(0, right - left);
+                    const visH = Math.max(0, bottom - top);
+                    const visArea = visW * visH;
+                    const fullArea = Math.max(1, fr2.width * fr2.height);
+                    parkedOk = (visArea / fullArea) <= 0.12;
+                }
+            } catch (e) {}
+            if (!parkedOk) {
+                // Prefer compositor-actor hide to avoid taskbar-style minimize animation.
+                let hidden = false;
+                try {
+                    const actor = (typeof metaWindow.get_compositor_private === 'function') ? metaWindow.get_compositor_private() : null;
+                    if (actor && typeof actor.hide === 'function') {
+                        actor.hide();
+                        hidden = true;
+                        this.#sideHiddenModeByKey[k] = 'actor';
+                    }
+                } catch (e) {}
+                if (!hidden) {
+                    try { if (typeof metaWindow.minimize === 'function') metaWindow.minimize(); } catch (e) {}
+                    this.#sideHiddenModeByKey[k] = 'minimize';
+                }
+                this.#sideHiddenKeys.add(k);
+            } else {
+                this.#sideHiddenKeys.delete(k);
+                delete this.#sideHiddenModeByKey[k];
+            }
             return true;
         } catch (e) {}
         return false;
@@ -823,6 +1020,36 @@ class Application {
         }
 
         this.#notify(`Window moved to side ${toSide + 1}`);
+    }
+
+    #redirectFocusToWindowSideIfNeeded(metaWindow) {
+        if (!metaWindow || metaWindow.window_type !== Meta.WindowType.NORMAL) return false;
+
+        const wsIndex = this.#getWorkspaceIndexOfWindow(metaWindow);
+        if (wsIndex === null) return false;
+        if (wsIndex !== this.#getActiveWorkspaceIndex()) return false;
+
+        const k = String(this.#windowKey(metaWindow));
+        const targetSide = this.#getWindowSide(wsIndex, k);
+        const activeSide = this.#getActiveSideIndex(wsIndex);
+        if (targetSide === activeSide) return false;
+
+        const now = Date.now();
+        if (now < (this.#sideFocusRedirectUntil || 0)) return false;
+        this.#sideFocusRedirectUntil = now + 450;
+
+        this.#setActiveSideIndex(wsIndex, targetSide);
+        this.#restoreActiveSideWindows(wsIndex);
+        this.#parkInactiveSideWindows(wsIndex);
+
+        const wsKey = String(wsIndex);
+        if (this.#lastLayout[wsKey]) delete this.#lastLayout[wsKey];
+
+        if (this.#isTilingEnabled(wsIndex)) this.#scheduleRetileBurst(wsIndex, 'focus-side-redirect');
+        else this.#syncTileBorders(wsIndex, 'focus-side-redirect', false);
+
+        this.#notify(`Workspace ${wsIndex + 1}: side ${targetSide + 1}`);
+        return true;
     }
 
     // Compute whether a given tree would violate minimum tile sizes.
@@ -2313,6 +2540,7 @@ class Application {
 
     #onWindowNeedsRetile(metaWindow, reason) {
         if (!metaWindow) return;
+        if (this.#sideHiddenKeys.has(String(this.#windowKey(metaWindow)))) return;
         // v0.64/v0.65: floating/sticky windows never trigger reflow.
         if (this.#isUserFloating(metaWindow)) return;
         // v0.68: forced-floating windows never trigger reflow.
@@ -2425,6 +2653,8 @@ class Application {
             if (lastWs !== null) this.#deleteWindowSide(lastWs, winKey);
             if (lastWs !== null) this.#scheduleRetile(lastWs, 'window-unmanaged');
             delete this.#parkRestoreRectByKey[winKey];
+            this.#sideHiddenKeys.delete(winKey);
+            delete this.#sideHiddenModeByKey[winKey];
             // v0.682: ensure overlays drop immediately for closed windows.
             this.#scheduleBorderRefreshActive('unmanaged', 0);
             // If the unmanaged window was on the active workspace, refresh overlays quickly.
@@ -2592,6 +2822,14 @@ class Application {
 
         // Focus changes -> active/inactive border styling refresh (active workspace only).
         this.#safeConnect(global.display, 'notify::focus-window', () => {
+            try {
+                const fw = this.#getFocusWindow();
+                if (fw && this.#redirectFocusToWindowSideIfNeeded(fw)) {
+                    // Side switch triggers its own follow-up focus notifications.
+                    return;
+                }
+            } catch (e) {}
+
             // v0.63: remember last focused tile per workspace (monitor-aware)
             try {
                 const w = this.#getFocusWindow();
