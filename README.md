@@ -2,7 +2,7 @@
 
 <center><img src=icon.png width=200 height=200></center>
 
-**hyprmon** is a Linux Mint **Cinnamon (X11)** extension that adds a **toggleable, per-workspace auto-tiling workflow** with Hyprland-like ergonomics, while staying inside Cinnamon/Muffin.
+**hyprmon** is a Linux Mint **Cinnamon (X11)** extension that adds a **toggleable, per-workspace auto-tiling workflow** with Hyprland-like and added 'scroller-like' ergonomics and auto-opacity-adjusted windows, while staying inside Cinnamon/Muffin.
 
 - UUID: `hyprmon@og-yona`
 - Target: Cinnamon `6.2` (Linux Mint 22.3), X11
