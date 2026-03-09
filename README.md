@@ -8,7 +8,58 @@
 - Target: Cinnamon `6.2` (Linux Mint 22.3), X11
 - Current version: **v0.6862**
 
+You love your Linux Mint and Cinnamon, but you would still like to try one of those fancy auto-tilers everyone keeps talking about. Maybe you also want scrolling-style desktop flow, but without giving up your Cinnamon workflow, Muffin behavior, panel setup, and the rest of the desktop niceties you already enjoy.
+
+**hyprmon** gives you both: per-workspace auto-tiling and scrollable virtual sideviews inside your workspaces, while still letting Cinnamon feel like Cinnamon. You can tile when you want, keep windows floating or sticky when that makes more sense, and optionally add visual extras such as borders and auto-window-opacity. Or easily toggle parts of that off again, if “visual enhancements” feel more like visual disenhancements on a given day.
+
 ---
+ 
+## Table of Contents
+
+- [Quick Start](#quick-start)
+- [Feature Overview](#feature-overview)
+  - [1. Core Tiling](#1-core-tiling)
+  - [2. BSP Layout Model](#2-bsp-layout-model)
+  - [3. Sideviews (v0.684+)](#3-sideviews-v0684)
+  - [4. Window Modes](#4-window-modes)
+  - [5. Forced Floating Rules (v0.68)](#5-forced-floating-rules-v068)
+  - [6. Keyboard Ergonomics (v0.67 / v0.671)](#6-keyboard-ergonomics-v067--v0671)
+  - [7. Borders, Visuals, HUD](#7-borders-visuals-hud)
+  - [8. Auto Window Opacity (v0.686)](#8-auto-window-opacity-v0686)
+- [Install](#install)
+- [Enable / Reload](#enable--reload)
+- [Default Hotkeys](#default-hotkeys)
+- [Forced Floating Rules](#forced-floating-rules)
+- [State File](#state-file)
+- [Debugging](#debugging)
+- [Limitations](#limitations)
+- [Architecture (Current)](#architecture-current)
+- [Credits](#credits)
+- [License](#license)
+
+## Quick Start
+
+1. **Download or clone the repo** 
+   - `git clone https://github.com/og-yona/hyprmon.git`
+2. **Install hyprmon**
+   - *(enter directory `cd hyprmon`)*
+   - run `./install-hyprmon.sh`, or
+   - see the full [Install](#install) section below
+3. **Restart Cinnamon**
+   - *(answer `y` for `./install-hyprmon.sh`'s prompt for restarting Cinnamon) or*
+   - `Alt+F2`, then `r`, or disable/re-enable the extension, or log out/in if needed
+   - Restarting Cinnamon *should* keep your desktop session intact, some windows might move around
+4. **Open Extensions and enable hyprmon**
+5. **Configure it to your liking**
+
+Default core toggle keys:
+- auto-tiling: `Super+T`
+- auto-opacity: `Super+O`
+- gaps: `Super+G`
+- floating window: `Super+V`
+- sticky window: `Super+S`
+- scroll sideviews: `Super+Page_Up` / `Super+Page_Down`
+- move focused window between sideviews: `Super+Shift+Page_Up` / `Super+Shift+Page_Down`
 
 ## Feature Overview
 
@@ -62,7 +113,6 @@ Regex-based rules by class/title (`forceFloatingRules`) to keep selected apps ou
   - configurable position (`top-center`, `bottom-center`, `active-monitor`)
 
 ### 8. Auto Window Opacity (v0.686)
-Integrated from `auto-window-opacity` and adapted to hyprmon:
 - Focused/unfocused/fullscreen-maximized opacity levels
 - Optional dialog/utility participation
 - Refresh interval control
@@ -72,6 +122,8 @@ Integrated from `auto-window-opacity` and adapted to hyprmon:
 ---
 
 ## Install
+
+For the shortest path, see [Quick Start](#quick-start) above.
 
 Cinnamon extension path:
 - `~/.local/share/cinnamon/extensions/<uuid>/`
@@ -117,7 +169,7 @@ If changes do not apply:
 
 ## Default Hotkeys
 
-### Workspace / Layout
+### Workspace / Layout / Core Toggles
 - Toggle tiling: `Super+T`
 - Manual retile: `Super+Shift+T`
 - Reset layout: `Super+Shift+R`
