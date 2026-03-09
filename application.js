@@ -2,8 +2,6 @@
 - The main script of the Extension
 */
 const Clutter = imports.gi.Clutter;
-const St = imports.gi.St;
-const Main = imports.ui.main;
 const Mainloop = imports.mainloop;
 const Meta = imports.gi.Meta;
 const Settings = imports.ui.settings;
@@ -14,6 +12,12 @@ const { TilingStateIO } = require('./tiling-state-io');
 const { reconcileBspTree, computeRectsFromBspTree, removeLeafByKey, insertKeyBySplittingLeaf, findKeyAtPoint, setSplitRatioAtPath, findSplitBetweenKeys, findNearestSplitForKey, swapLeavesByKey } = require('./bsp-tree');
 const { findAdjacentKey, computeRatioFromWindowRect, clampRatioForParent } = require('./bsp-resize');
 const { TileBorders } = require('./tile-borders');
+const { HudNotifier } = require('./hud-notifier');
+const { Hotkeys } = require('./hotkeys');
+const { compileForcedFloatRules } = require('./forced-float-rules');
+const { Sideviews } = require('./sideviews');
+const { SideState } = require('./side-state');
+const { connectWindowGrabs } = require('./window-grabs');
 
 // The application class is only constructed once and is the main entry
 // of the extension.
@@ -101,17 +105,11 @@ class Application {
     // v0.62: opt-in geometry animation timers (key -> sourceId)
     #geomAnimByKey = Object.create(null);
 
-    // lightweight in-extension notification HUD (overwrites previous message)
-    #hudBox = null;
-    #hudLabel = null;
-    #hudTimer = 0;
-
-    // v2 sideviews: remembered geometry before parking off-screen (key -> frameRect)
-    #parkRestoreRectByKey = Object.create(null);
-    // v2 sideviews: windows hidden by hyprmon because parking was clamped by WM
-    #sideHiddenKeys = new Set();
-    #sideHiddenModeByKey = Object.create(null); // key -> 'actor' | 'minimize'
-    #sideFocusRedirectUntil = 0;
+    // extracted helpers
+    #hudNotifier = null;
+    #hotkeys = null;
+    #sideviews = null;
+    #sideState = null;
  
     // v0.63: remember last focused tile per workspace (and monitor) for "split active window"
     // wsIndex -> { key, monIndex, ts }
@@ -185,6 +183,89 @@ class Application {
             this.#settings.bindProperty(Settings.BindingDirection.IN, k, k, onVisualsChanged);
         }
 
+        this.#hudNotifier = new HudNotifier(
+            () => this.#settings?.settingsData || Object.create(null),
+            () => this.#getMonitorIndexOfWindow(this.#getFocusWindow())
+        );
+        this.#hotkeys = new Hotkeys(
+            () => this.#settings?.settingsData || Object.create(null),
+            {
+                toggleGapsOnActiveWorkspace: this.#toggleGapsOnActiveWorkspace.bind(this),
+
+                focusNeighborLeft: () => this.#focusNeighborDir('W'),
+                focusNeighborRight: () => this.#focusNeighborDir('E'),
+                focusNeighborUp: () => this.#focusNeighborDir('N'),
+                focusNeighborDown: () => this.#focusNeighborDir('S'),
+
+                swapNeighborLeft: () => this.#swapNeighborDir('W'),
+                swapNeighborRight: () => this.#swapNeighborDir('E'),
+                swapNeighborUp: () => this.#swapNeighborDir('N'),
+                swapNeighborDown: () => this.#swapNeighborDir('S'),
+
+                growActiveLeft: () => this.#growActiveDir('W'),
+                growActiveRight: () => this.#growActiveDir('E'),
+                growActiveUp: () => this.#growActiveDir('N'),
+                growActiveDown: () => this.#growActiveDir('S'),
+
+                shrinkActiveLeft: () => this.#shrinkActiveDir('W'),
+                shrinkActiveRight: () => this.#shrinkActiveDir('E'),
+                shrinkActiveUp: () => this.#shrinkActiveDir('N'),
+                shrinkActiveDown: () => this.#shrinkActiveDir('S'),
+
+                changeShapeLeft: () => this.#changeShapeDir('W'),
+                changeShapeRight: () => this.#changeShapeDir('E'),
+                changeShapeUp: () => this.#changeShapeDir('N'),
+                changeShapeDown: () => this.#changeShapeDir('S'),
+
+                switchSidePrev: () => this.#switchActiveWorkspaceSide(-1),
+                switchSideNext: () => this.#switchActiveWorkspaceSide(1),
+                moveWindowToPrevSide: () => this.#moveFocusedWindowToSideDelta(-1),
+                moveWindowToNextSide: () => this.#moveFocusedWindowToSideDelta(1),
+
+                toggleTilingOnActiveWorkspace: this.#toggleTilingOnActiveWorkspace.bind(this),
+                retileActiveWorkspace: this.#retileActiveWorkspace.bind(this),
+                resetLayoutOnActiveWorkspace: this.#resetLayoutOnActiveWorkspace.bind(this),
+                toggleFloatOnFocusedWindow: this.#toggleFloatOnFocusedWindow.bind(this),
+                defloatAllWindows: this.#defloatAllWindows.bind(this),
+                toggleStickyOnFocusedWindow: this.#toggleStickyOnFocusedWindow.bind(this),
+            }
+        );
+        this.#sideviews = new Sideviews({
+            getActiveWorkspaceIndex: () => this.#getActiveWorkspaceIndex(),
+            getActiveSideIndex: (wsIndex) => this.#getActiveSideIndex(wsIndex),
+            setActiveSideIndex: (wsIndex, sideIndex) => this.#setActiveSideIndex(wsIndex, sideIndex),
+            getWindowSide: (wsIndex, winKey) => this.#getWindowSide(wsIndex, winKey),
+            setWindowSide: (wsIndex, winKey, sideIndex) => this.#setWindowSide(wsIndex, winKey, sideIndex),
+            getFocusWindow: () => this.#getFocusWindow(),
+            getWorkspaceIndexOfWindow: (w) => this.#getWorkspaceIndexOfWindow(w),
+            getMonitorIndexOfWindow: (w) => this.#getMonitorIndexOfWindow(w),
+            getWindowKey: (w) => this.#windowKey(w),
+            isSticky: (w) => this.#isSticky(w),
+            isTilingEnabled: (wsIndex) => this.#isTilingEnabled(wsIndex),
+            getBspTree: (wsIndex, monIndex, sideIndex) => this.#getBspTree(wsIndex, monIndex, sideIndex),
+            setBspTree: (wsIndex, monIndex, tree, sideIndex) => this.#setBspTree(wsIndex, monIndex, tree, sideIndex),
+            insertWindowIntoLayout: (w, reason, scheduleRetile) => this.#insertWindowIntoLayout(w, reason, scheduleRetile),
+            retileAfterDrag: (wsIndex, reason) => this.#retileAfterDrag(wsIndex, reason),
+            scheduleRetileBurst: (wsIndex, reason) => this.#scheduleRetileBurst(wsIndex, reason),
+            syncTileBorders: (wsIndex, reason, liveTick) => this.#syncTileBorders(wsIndex, reason, liveTick),
+            clearWorkspaceLastLayout: (wsIndex) => {
+                const wsKey = String(wsIndex);
+                if (this.#lastLayout[wsKey]) delete this.#lastLayout[wsKey];
+            },
+            suppressWindowGeomSignals: (w, ms) => this.#suppressWindowGeomSignals(w, ms),
+            isWindowBusyKey: (k) => this.#movingWindowKeys.has(k) || this.#resizingWindowKeys.has(k),
+            notify: (message) => this.#notify(message),
+            focusWindowOnSide: (wsIndex, sideIndex) => this.#focusWindowOnSide(wsIndex, sideIndex),
+        });
+        this.#sideState = new SideState(
+            () => this.#tilingState,
+            (reason) => this.#scheduleSaveTilingState(reason),
+            (wsIndex) => {
+                const wsKey = String(wsIndex);
+                if (this.#lastLayout[wsKey]) delete this.#lastLayout[wsKey];
+            }
+        );
+
         this.#applyDefaultWorkspaceEnable();
         this.#enableTilingHotkeys();
         this.#compileForcedFloatRules(); //v068
@@ -241,15 +322,12 @@ class Application {
         try { if (this.#tileBorders) this.#tileBorders.destroy(); } catch (e) {}
         this.#tileBorders = null;
 
-        if (this.#hudTimer) {
-            try { Mainloop.source_remove(this.#hudTimer); } catch (e) {}
-            this.#hudTimer = 0;
-        }
-        try {
-            if (this.#hudBox) this.#hudBox.destroy();
-        } catch (e) {}
-        this.#hudBox = null;
-        this.#hudLabel = null;
+        try { if (this.#hudNotifier) this.#hudNotifier.destroy(); } catch (e) {}
+        this.#hudNotifier = null;
+        this.#hotkeys = null;
+        try { if (this.#sideviews) this.#sideviews.destroy(); } catch (e) {}
+        this.#sideviews = null;
+        this.#sideState = null;
  
         // v0.682: cleanup border timers
         if (this.#borderRefreshTimer) {
@@ -282,23 +360,6 @@ class Application {
                 if (this.#stickyKeys.has(k)) {
                     try { if (typeof w.unstick === 'function') w.unstick(); } catch (e) {}
                 }
-                // v2 sideviews: ensure we don't leave windows hidden on extension disable.
-                if (this.#sideHiddenKeys.has(k)) {
-                    const mode = String(this.#sideHiddenModeByKey[k] || '');
-                    if (mode === 'actor') {
-                        try {
-                            const actor = (typeof w.get_compositor_private === 'function') ? w.get_compositor_private() : null;
-                            if (actor && typeof actor.show === 'function') actor.show();
-                        } catch (e) {}
-                    } else if (mode === 'minimize') {
-                        try {
-                            if (typeof w.unminimize === 'function') {
-                                const t = (typeof global.get_current_time === 'function') ? global.get_current_time() : Date.now();
-                                w.unminimize(t);
-                            }
-                        } catch (e) {}
-                    }
-                }
             }
         } catch (e) {}
         this.#hyprmonAboveKeys.clear();
@@ -320,8 +381,6 @@ class Application {
 
         this.#trackedSeq.clear();
         try { this.#floatingWindowKeys.clear(); } catch (e) {}
-        try { this.#sideHiddenKeys.clear(); } catch (e) {}
-        this.#sideHiddenModeByKey = Object.create(null);
     }
  
     #safeConnect(obj, signalName, cb) {
@@ -335,268 +394,16 @@ class Application {
     }
  
     #disableTilingHotkeys() {
-        Main.keybindingManager.removeHotKey('hyprmon-toggle-tiling');
-        Main.keybindingManager.removeHotKey('hyprmon-tile-now');
-        Main.keybindingManager.removeHotKey('hyprmon-reset-layout');
-        // v0.64/v0.65
-        Main.keybindingManager.removeHotKey('hyprmon-toggle-float');
-        Main.keybindingManager.removeHotKey('hyprmon-defloat-all');
-        Main.keybindingManager.removeHotKey('hyprmon-toggle-sticky');
-        // v0.66
-        Main.keybindingManager.removeHotKey('hyprmon-toggle-gaps');
-        // v0.67
-        Main.keybindingManager.removeHotKey('hyprmon-focus-left');
-        Main.keybindingManager.removeHotKey('hyprmon-focus-right');
-        Main.keybindingManager.removeHotKey('hyprmon-focus-up');
-        Main.keybindingManager.removeHotKey('hyprmon-focus-down');
-        Main.keybindingManager.removeHotKey('hyprmon-swap-left');
-        Main.keybindingManager.removeHotKey('hyprmon-swap-right');
-        Main.keybindingManager.removeHotKey('hyprmon-swap-up');
-        Main.keybindingManager.removeHotKey('hyprmon-swap-down');
-        Main.keybindingManager.removeHotKey('hyprmon-grow-left');
-        Main.keybindingManager.removeHotKey('hyprmon-grow-right');
-        Main.keybindingManager.removeHotKey('hyprmon-grow-up');
-        Main.keybindingManager.removeHotKey('hyprmon-grow-down');
-        // v0.671
-        Main.keybindingManager.removeHotKey('hyprmon-shrink-left');
-        Main.keybindingManager.removeHotKey('hyprmon-shrink-right');
-        Main.keybindingManager.removeHotKey('hyprmon-shrink-up');
-        Main.keybindingManager.removeHotKey('hyprmon-shrink-down');
-        Main.keybindingManager.removeHotKey('hyprmon-change-shape-left');
-        Main.keybindingManager.removeHotKey('hyprmon-change-shape-right');
-        Main.keybindingManager.removeHotKey('hyprmon-change-shape-up');
-        Main.keybindingManager.removeHotKey('hyprmon-change-shape-down');
-        // v2 sideviews
-        Main.keybindingManager.removeHotKey('hyprmon-side-prev');
-        Main.keybindingManager.removeHotKey('hyprmon-side-next');
-        Main.keybindingManager.removeHotKey('hyprmon-side-move-prev');
-        Main.keybindingManager.removeHotKey('hyprmon-side-move-next');
+        if (this.#hotkeys) this.#hotkeys.disable();
     }
 
     #enableTilingHotkeys() {
-        this.#disableTilingHotkeys();
-
-        const gapsToggleBinding = (this.#settings.settingsData.gapsToggleHotkey?.value || '').trim();
-        const toggleBinding = (this.#settings.settingsData.tilingToggleHotkey?.value || '').trim();
-        const tileNowBinding = (this.#settings.settingsData.tilingRetileHotkey?.value || '').trim();
-        const resetBinding = (this.#settings.settingsData.tilingResetHotkey?.value || '').trim();
-        const floatBinding = (this.#settings.settingsData.floatToggleHotkey?.value || '').trim();
-        const defloatAllBinding = (this.#settings.settingsData.defloatAllHotkey?.value || '').trim();
-        const stickyBinding = (this.#settings.settingsData.stickyToggleHotkey?.value || '').trim();
-        // v0.67 bindings
-        const focusLeftBinding  = (this.#settings.settingsData.focusLeftHotkey?.value || '').trim();
-        const focusRightBinding = (this.#settings.settingsData.focusRightHotkey?.value || '').trim();
-        const focusUpBinding    = (this.#settings.settingsData.focusUpHotkey?.value || '').trim();
-        const focusDownBinding  = (this.#settings.settingsData.focusDownHotkey?.value || '').trim();
-        const swapLeftBinding   = (this.#settings.settingsData.swapLeftHotkey?.value || '').trim();
-        const swapRightBinding  = (this.#settings.settingsData.swapRightHotkey?.value || '').trim();
-        const swapUpBinding     = (this.#settings.settingsData.swapUpHotkey?.value || '').trim();
-        const swapDownBinding   = (this.#settings.settingsData.swapDownHotkey?.value || '').trim();
-        const growLeftBinding   = (this.#settings.settingsData.growLeftHotkey?.value || '').trim();
-        const growRightBinding  = (this.#settings.settingsData.growRightHotkey?.value || '').trim();
-        const growUpBinding     = (this.#settings.settingsData.growUpHotkey?.value || '').trim();
-        const growDownBinding   = (this.#settings.settingsData.growDownHotkey?.value || '').trim();
-        // v0.671 bindings
-        const shrinkLeftBinding  = (this.#settings.settingsData.shrinkLeftHotkey?.value || '').trim();
-        const shrinkRightBinding = (this.#settings.settingsData.shrinkRightHotkey?.value || '').trim();
-        const shrinkUpBinding    = (this.#settings.settingsData.shrinkUpHotkey?.value || '').trim();
-        const shrinkDownBinding  = (this.#settings.settingsData.shrinkDownHotkey?.value || '').trim();
-        const shapeLeftBinding   = (this.#settings.settingsData.changeShapeLeftHotkey?.value || '').trim();
-        const shapeRightBinding  = (this.#settings.settingsData.changeShapeRightHotkey?.value || '').trim();
-        const shapeUpBinding     = (this.#settings.settingsData.changeShapeUpHotkey?.value || '').trim();
-        const shapeDownBinding   = (this.#settings.settingsData.changeShapeDownHotkey?.value || '').trim();
-        // v2 sideviews
-        const sidePrevBinding = (this.#settings.settingsData.sideviewPrevHotkey?.value || '').trim();
-        const sideNextBinding = (this.#settings.settingsData.sideviewNextHotkey?.value || '').trim();
-        const sideMovePrevBinding = (this.#settings.settingsData.moveWindowToPrevSideHotkey?.value || '').trim();
-        const sideMoveNextBinding = (this.#settings.settingsData.moveWindowToNextSideHotkey?.value || '').trim();
-
-        if (gapsToggleBinding) {
-            Main.keybindingManager.addHotKey(
-                'hyprmon-toggle-gaps',
-                gapsToggleBinding,
-                this.#toggleGapsOnActiveWorkspace.bind(this)
-            );
-        }
-
-        // v0.67 focus
-        if (focusLeftBinding) Main.keybindingManager.addHotKey('hyprmon-focus-left', focusLeftBinding, () => this.#focusNeighborDir('W'));
-        if (focusRightBinding) Main.keybindingManager.addHotKey('hyprmon-focus-right', focusRightBinding, () => this.#focusNeighborDir('E'));
-        if (focusUpBinding) Main.keybindingManager.addHotKey('hyprmon-focus-up', focusUpBinding, () => this.#focusNeighborDir('N'));
-        if (focusDownBinding) Main.keybindingManager.addHotKey('hyprmon-focus-down', focusDownBinding, () => this.#focusNeighborDir('S'));
-
-        // v0.67 swap
-        if (swapLeftBinding) Main.keybindingManager.addHotKey('hyprmon-swap-left', swapLeftBinding, () => this.#swapNeighborDir('W'));
-        if (swapRightBinding) Main.keybindingManager.addHotKey('hyprmon-swap-right', swapRightBinding, () => this.#swapNeighborDir('E'));
-        if (swapUpBinding) Main.keybindingManager.addHotKey('hyprmon-swap-up', swapUpBinding, () => this.#swapNeighborDir('N'));
-        if (swapDownBinding) Main.keybindingManager.addHotKey('hyprmon-swap-down', swapDownBinding, () => this.#swapNeighborDir('S'));
-
-        // v0.67 grow
-        if (growLeftBinding) Main.keybindingManager.addHotKey('hyprmon-grow-left', growLeftBinding, () => this.#growActiveDir('W'));
-        if (growRightBinding) Main.keybindingManager.addHotKey('hyprmon-grow-right', growRightBinding, () => this.#growActiveDir('E'));
-        if (growUpBinding) Main.keybindingManager.addHotKey('hyprmon-grow-up', growUpBinding, () => this.#growActiveDir('N'));
-        if (growDownBinding) Main.keybindingManager.addHotKey('hyprmon-grow-down', growDownBinding, () => this.#growActiveDir('S'));
-
-        // v0.671 shrink (same path as grow, but inverted)
-        if (shrinkLeftBinding) Main.keybindingManager.addHotKey('hyprmon-shrink-left', shrinkLeftBinding, () => this.#shrinkActiveDir('W'));
-        if (shrinkRightBinding) Main.keybindingManager.addHotKey('hyprmon-shrink-right', shrinkRightBinding, () => this.#shrinkActiveDir('E'));
-        if (shrinkUpBinding) Main.keybindingManager.addHotKey('hyprmon-shrink-up', shrinkUpBinding, () => this.#shrinkActiveDir('N'));
-        if (shrinkDownBinding) Main.keybindingManager.addHotKey('hyprmon-shrink-down', shrinkDownBinding, () => this.#shrinkActiveDir('S'));
-
-        // v0.671 change-shape (toggle split axis for a symmetric pair)
-        if (shapeLeftBinding) Main.keybindingManager.addHotKey('hyprmon-change-shape-left', shapeLeftBinding, () => this.#changeShapeDir('W'));
-        if (shapeRightBinding) Main.keybindingManager.addHotKey('hyprmon-change-shape-right', shapeRightBinding, () => this.#changeShapeDir('E'));
-        if (shapeUpBinding) Main.keybindingManager.addHotKey('hyprmon-change-shape-up', shapeUpBinding, () => this.#changeShapeDir('N'));
-        if (shapeDownBinding) Main.keybindingManager.addHotKey('hyprmon-change-shape-down', shapeDownBinding, () => this.#changeShapeDir('S'));
-
-        // v2 sideviews
-        if (sidePrevBinding) Main.keybindingManager.addHotKey('hyprmon-side-prev', sidePrevBinding, () => this.#switchActiveWorkspaceSide(-1));
-        if (sideNextBinding) Main.keybindingManager.addHotKey('hyprmon-side-next', sideNextBinding, () => this.#switchActiveWorkspaceSide(1));
-        if (sideMovePrevBinding) Main.keybindingManager.addHotKey('hyprmon-side-move-prev', sideMovePrevBinding, () => this.#moveFocusedWindowToSideDelta(-1));
-        if (sideMoveNextBinding) Main.keybindingManager.addHotKey('hyprmon-side-move-next', sideMoveNextBinding, () => this.#moveFocusedWindowToSideDelta(1));
-
-        if (toggleBinding) {
-            Main.keybindingManager.addHotKey(
-                'hyprmon-toggle-tiling',
-                toggleBinding,
-                this.#toggleTilingOnActiveWorkspace.bind(this)
-            );
-        }
-
-        if (tileNowBinding) {
-            Main.keybindingManager.addHotKey(
-                'hyprmon-tile-now',
-                tileNowBinding,
-                this.#retileActiveWorkspace.bind(this)
-            );
-        }
-
-        if (resetBinding) {
-            Main.keybindingManager.addHotKey(
-                'hyprmon-reset-layout',
-                resetBinding,
-                this.#resetLayoutOnActiveWorkspace.bind(this)
-            );
-        }
-
-        if (floatBinding) {
-            Main.keybindingManager.addHotKey(
-                'hyprmon-toggle-float',
-                floatBinding,
-                this.#toggleFloatOnFocusedWindow.bind(this)
-            );
-        }
-
-        if (defloatAllBinding) {
-            Main.keybindingManager.addHotKey(
-                'hyprmon-defloat-all',
-                defloatAllBinding,
-                this.#defloatAllWindows.bind(this)
-            );
-        }
-
-        if (stickyBinding) {
-            Main.keybindingManager.addHotKey(
-                'hyprmon-toggle-sticky',
-                stickyBinding,
-                this.#toggleStickyOnFocusedWindow.bind(this)
-            );
-        }
-    }
-
-    #ensureHud() {
-        if (this.#hudBox && this.#hudLabel) return;
-        try {
-            const box = new St.BoxLayout({
-                vertical: false,
-                reactive: false,
-                visible: false
-            });
-            box.set_style(
-                'padding: 8px 12px; ' +
-                'border-radius: 10px; ' +
-                'background-color: rgba(16,16,16,0.86);'
-            );
-            const label = new St.Label({
-                text: '',
-                y_align: Clutter.ActorAlign.CENTER
-            });
-            label.set_style('color: rgba(245,245,245,0.98); font-size: 11pt; font-weight: 600;');
-            box.add_child(label);
-            Main.uiGroup.add_child(box);
-            this.#hudBox = box;
-            this.#hudLabel = label;
-        } catch (e) {
-            this.#hudBox = null;
-            this.#hudLabel = null;
-        }
-    }
-
-    #positionHud() {
-        if (!this.#hudBox) return;
-        try {
-            const cfg = this.#getHudConfig();
-            let mon = global.display.get_primary_monitor();
-            if (cfg.position === 'active-monitor') {
-                const fw = this.#getFocusWindow();
-                const m = this.#getMonitorIndexOfWindow(fw);
-                if (m !== null && Number.isFinite(m)) mon = Number(m);
-            }
-            const r = global.display.get_monitor_geometry(mon);
-            const w = this.#hudBox.get_width();
-            const x = r.x + Math.floor((r.width - w) / 2);
-            const y = (cfg.position === 'bottom-center')
-                ? (r.y + r.height - 56 - this.#hudBox.get_height())
-                : (r.y + 56);
-            this.#hudBox.set_position(x, y);
-        } catch (e) {}
-    }
-
-    #getHudConfig() {
-        const sd = this.#settings?.settingsData || Object.create(null);
-        const rawMs = Number(sd.hudNotifyTimeoutMs?.value ?? 900);
-        const timeoutMs = Math.max(120, Math.min(5000, Math.floor(Number.isFinite(rawMs) ? rawMs : 900)));
-        const rawPos = String(sd.hudNotifyPosition?.value || 'top-center').trim().toLowerCase();
-        const position = (rawPos === 'bottom-center' || rawPos === 'active-monitor')
-            ? rawPos
-            : 'top-center';
-        return { timeoutMs, position };
+        if (this.#hotkeys) this.#hotkeys.enable();
     }
 
     #notify(message) {
-        const text = String(message || '').trim();
-        if (!text) return;
-
-        this.#ensureHud();
-        if (this.#hudBox && this.#hudLabel) {
-            try {
-                this.#hudLabel.set_text(text);
-                this.#hudBox.show();
-                this.#hudBox.opacity = 255;
-                this.#hudBox.queue_relayout();
-                this.#positionHud();
-                if (this.#hudTimer) {
-                    Mainloop.source_remove(this.#hudTimer);
-                    this.#hudTimer = 0;
-                }
-                const cfg = this.#getHudConfig();
-                this.#hudTimer = Mainloop.timeout_add(cfg.timeoutMs, () => {
-                    this.#hudTimer = 0;
-                    try { if (this.#hudBox) this.#hudBox.hide(); } catch (e) {}
-                    return false;
-                });
-                return;
-            } catch (e) {}
-        }
-
-        // fallback if HUD creation fails
-        try {
-            if (Main.notify) {
-                Main.notify('hyprmon', text);
-                return;
-            }
-        } catch (e) {}
-        global.log(`hyprmon: ${text}`);
+        if (this.#hudNotifier) this.#hudNotifier.notify(message);
+        else global.log(`hyprmon: ${String(message || '')}`);
     }
 
     #getActiveWorkspaceIndex() {
@@ -619,32 +426,7 @@ class Application {
 
     #compileForcedFloatRules() {
         const raw = String(this.#settings?.settingsData?.forceFloatingRules?.value || '');
-        const out = [];
-
-        const parts = raw
-            .split(/\n|,/g)
-            .map(s => String(s || '').trim())
-            .filter(s => s.length > 0 && !s.startsWith('#'));
-
-        for (const p of parts) {
-            let kind = 'any';
-            let pat = p;
-
-            const m = p.match(/^(class|title)\s*:\s*(.+)$/i);
-            if (m) {
-                kind = String(m[1]).toLowerCase();
-                pat = String(m[2] || '').trim();
-            }
-            if (!pat) continue;
-
-            try {
-                out.push({ kind, re: new RegExp(pat, 'i') });
-            } catch (e) {
-                // ignore invalid regex
-            }
-        }
-
-        this.#forcedFloatRules = out;
+        this.#forcedFloatRules = compileForcedFloatRules(raw);
     }
 
     #getMinTileSizePx() {
@@ -759,297 +541,40 @@ class Application {
         for (const ws of enabledWs) this.#scheduleRetile(ws, reason || 'retile-all');
     }
 
-    #getGlobalMonitorBounds() {
-        let left = Infinity;
-        let top = Infinity;
-        let right = -Infinity;
-        let bottom = -Infinity;
-        let maxWidth = 0;
-        let maxHeight = 0;
-
-        const n = global.display.get_n_monitors();
-        for (let i = 0; i < n; i++) {
-            let r = null;
-            try { r = global.display.get_monitor_geometry(i); } catch (e) {}
-            if (!r) continue;
-            left = Math.min(left, r.x);
-            top = Math.min(top, r.y);
-            right = Math.max(right, r.x + r.width);
-            bottom = Math.max(bottom, r.y + r.height);
-            maxWidth = Math.max(maxWidth, r.width || 0);
-            maxHeight = Math.max(maxHeight, r.height || 0);
-        }
-
-        if (!Number.isFinite(left) || !Number.isFinite(top) || !Number.isFinite(right) || !Number.isFinite(bottom)) {
-            return { left: 0, top: 0, right: 1920, bottom: 1080, width: 1920, height: 1080, maxWidth: 1920, maxHeight: 1080 };
-        }
-        return {
-            left, top, right, bottom,
-            width: Math.max(1, right - left),
-            height: Math.max(1, bottom - top),
-            maxWidth: Math.max(1, maxWidth),
-            maxHeight: Math.max(1, maxHeight),
-        };
-    }
-
-    #getParkingStride() {
-        const b = this.#getGlobalMonitorBounds();
-        return Math.max(b.maxWidth, b.width) + 1000;
-    }
-
-    #getParkingRectForWindow(metaWindow, sideIndex, activeSide) {
-        if (!metaWindow) return null;
-        const side = Math.max(0, Math.floor(Number(sideIndex) || 0));
-        const active = Math.max(0, Math.floor(Number(activeSide) || 0));
-        if (side === active) return null;
-
-        let fr = null;
-        try { fr = metaWindow.get_frame_rect(); } catch (e) {}
-        if (!fr) fr = { x: 0, y: 0, width: 900, height: 700 };
-
-        // IMPORTANT:
-        // Muffin often clamps fully off-desktop coordinates back to a real monitor,
-        // which caused windows to collapse/stack on primary. Keep a tiny sliver
-        // on the window's *current monitor* so the WM keeps it logically there.
-        let mon = null;
-        try {
-            const monIndex = (typeof metaWindow.get_monitor === 'function') ? metaWindow.get_monitor() : null;
-            if (monIndex !== null && monIndex !== undefined) mon = global.display.get_monitor_geometry(monIndex);
-        } catch (e) {}
-        if (!mon) {
-            const b = this.#getGlobalMonitorBounds();
-            mon = { x: b.left, y: b.top, width: b.maxWidth, height: b.maxHeight };
-        }
-
-        const sliver = 8; // visible strip to avoid WM re-placement to primary monitor
-        const delta = Math.abs(side - active);
-        const laneNudge = Math.min(80, Math.max(0, (delta - 1) * 20));
-        const yMin = mon.y;
-        const yMax = mon.y + Math.max(0, mon.height - Math.max(1, fr.height));
-        const y = Math.max(yMin, Math.min(fr.y, yMax));
-
-        if (side < active) {
-            const x = (mon.x - fr.width + sliver) - laneNudge;
-            return { x, y, width: fr.width, height: fr.height };
-        }
-        const x = (mon.x + mon.width - sliver) + laneNudge;
-        return { x, y, width: fr.width, height: fr.height };
-    }
-
-    #restoreWindowFromParking(metaWindow) {
-        if (!metaWindow) return false;
-        const k = String(this.#windowKey(metaWindow));
-        if (this.#movingWindowKeys.has(k) || this.#resizingWindowKeys.has(k)) return false;
-        if (this.#sideHiddenKeys.has(k)) {
-            const mode = String(this.#sideHiddenModeByKey[k] || '');
-            if (mode === 'actor') {
-                try {
-                    const actor = (typeof metaWindow.get_compositor_private === 'function') ? metaWindow.get_compositor_private() : null;
-                    if (actor && typeof actor.show === 'function') actor.show();
-                } catch (e) {}
-            } else {
-                try {
-                    if (typeof metaWindow.unminimize === 'function') {
-                        const t = (typeof global.get_current_time === 'function') ? global.get_current_time() : Date.now();
-                        metaWindow.unminimize(t);
-                    }
-                } catch (e) {}
-            }
-            this.#sideHiddenKeys.delete(k);
-            delete this.#sideHiddenModeByKey[k];
-        }
-        const r = this.#parkRestoreRectByKey[k] || null;
-        if (!r) return false;
-        try {
-            this.#suppressWindowGeomSignals(metaWindow, 450);
-            if (typeof metaWindow.move_frame === 'function') metaWindow.move_frame(false, r.x, r.y);
-            else metaWindow.move_resize_frame(false, r.x, r.y, r.width, r.height);
-            delete this.#parkRestoreRectByKey[k];
-            return true;
-        } catch (e) {}
-        return false;
-    }
-
-    #parkWindowForSide(metaWindow, wsIndex, sideIndex, activeSide) {
-        if (!metaWindow) return false;
-        if (metaWindow.window_type !== Meta.WindowType.NORMAL) return false;
-        if (this.#isSticky(metaWindow)) return false;
-
-        const winWs = this.#getWorkspaceIndexOfWindow(metaWindow);
-        if (winWs === null || winWs !== wsIndex) return false;
-
-        const side = Math.max(0, Math.floor(Number(sideIndex) || 0));
-        const active = Math.max(0, Math.floor(Number(activeSide) || 0));
-        if (side === active) return this.#restoreWindowFromParking(metaWindow);
-
-        const pr = this.#getParkingRectForWindow(metaWindow, side, active);
-        if (!pr) return false;
-
-        const k = String(this.#windowKey(metaWindow));
-        if (this.#movingWindowKeys.has(k) || this.#resizingWindowKeys.has(k)) return false;
-        if (!this.#parkRestoreRectByKey[k]) {
-            try {
-                const fr = metaWindow.get_frame_rect();
-                this.#parkRestoreRectByKey[k] = { x: fr.x, y: fr.y, width: fr.width, height: fr.height };
-            } catch (e) {}
-        }
-
-        try {
-            this.#suppressWindowGeomSignals(metaWindow, 450);
-            if (typeof metaWindow.move_frame === 'function') metaWindow.move_frame(false, pr.x, pr.y);
-            else metaWindow.move_resize_frame(false, pr.x, pr.y, pr.width, pr.height);
-
-            // If WM clamps back on-screen, force-hide via minimize as fallback.
-            let parkedOk = false;
-            try {
-                const fr2 = metaWindow.get_frame_rect();
-                const monIndex = (typeof metaWindow.get_monitor === 'function') ? metaWindow.get_monitor() : null;
-                const mon = (monIndex !== null && monIndex !== undefined) ? global.display.get_monitor_geometry(monIndex) : null;
-                if (fr2 && mon) {
-                    const left = Math.max(fr2.x, mon.x);
-                    const right = Math.min(fr2.x + fr2.width, mon.x + mon.width);
-                    const top = Math.max(fr2.y, mon.y);
-                    const bottom = Math.min(fr2.y + fr2.height, mon.y + mon.height);
-                    const visW = Math.max(0, right - left);
-                    const visH = Math.max(0, bottom - top);
-                    const visArea = visW * visH;
-                    const fullArea = Math.max(1, fr2.width * fr2.height);
-                    parkedOk = (visArea / fullArea) <= 0.12;
-                }
-            } catch (e) {}
-            if (!parkedOk) {
-                // Prefer compositor-actor hide to avoid taskbar-style minimize animation.
-                let hidden = false;
-                try {
-                    const actor = (typeof metaWindow.get_compositor_private === 'function') ? metaWindow.get_compositor_private() : null;
-                    if (actor && typeof actor.hide === 'function') {
-                        actor.hide();
-                        hidden = true;
-                        this.#sideHiddenModeByKey[k] = 'actor';
-                    }
-                } catch (e) {}
-                if (!hidden) {
-                    try { if (typeof metaWindow.minimize === 'function') metaWindow.minimize(); } catch (e) {}
-                    this.#sideHiddenModeByKey[k] = 'minimize';
-                }
-                this.#sideHiddenKeys.add(k);
-            } else {
-                this.#sideHiddenKeys.delete(k);
-                delete this.#sideHiddenModeByKey[k];
-            }
-            return true;
-        } catch (e) {}
-        return false;
+    #restoreActiveSideWindows(wsIndex) {
+        if (this.#sideviews) this.#sideviews.restoreActiveSideWindows(wsIndex);
     }
 
     #parkInactiveSideWindows(wsIndex) {
-        const activeSide = this.#getActiveSideIndex(wsIndex);
+        if (this.#sideviews) this.#sideviews.parkInactiveSideWindows(wsIndex);
+    }
+
+    #switchActiveWorkspaceSide(delta) {
+        if (this.#sideviews) this.#sideviews.switchActiveWorkspaceSide(delta);
+    }
+
+    #moveFocusedWindowToSideDelta(delta) {
+        if (this.#sideviews) this.#sideviews.moveFocusedWindowToSideDelta(delta);
+    }
+
+    #redirectFocusToWindowSideIfNeeded(metaWindow) {
+        if (!this.#sideviews) return false;
+        return this.#sideviews.redirectFocusToWindowSideIfNeeded(metaWindow);
+    }
+
+    #focusWindowOnSide(wsIndex, sideIndex) {
+        const candidates = [];
         for (const w of listAllMetaWindows()) {
             if (!w || w.window_type !== Meta.WindowType.NORMAL) continue;
             if (this.#getWorkspaceIndexOfWindow(w) !== wsIndex) continue;
             if (this.#isSticky(w)) continue;
             const k = String(this.#windowKey(w));
-            const side = this.#getWindowSide(wsIndex, k);
-            this.#parkWindowForSide(w, wsIndex, side, activeSide);
+            if (this.#getWindowSide(wsIndex, k) !== sideIndex) continue;
+            candidates.push(w);
         }
-    }
-
-    #restoreActiveSideWindows(wsIndex) {
-        const activeSide = this.#getActiveSideIndex(wsIndex);
-        for (const w of listAllMetaWindows()) {
-            if (!w || w.window_type !== Meta.WindowType.NORMAL) continue;
-            if (this.#getWorkspaceIndexOfWindow(w) !== wsIndex) continue;
-            const k = String(this.#windowKey(w));
-            if (this.#getWindowSide(wsIndex, k) !== activeSide) continue;
-            this.#restoreWindowFromParking(w);
-        }
-    }
-
-    #switchActiveWorkspaceSide(delta) {
-        const wsIndex = this.#getActiveWorkspaceIndex();
-        const oldSide = this.#getActiveSideIndex(wsIndex);
-        const rawNext = oldSide + Math.floor(Number(delta) || 0);
-        const nextSide = Math.max(0, rawNext);
-        if (nextSide === oldSide) return;
-
-        this.#setActiveSideIndex(wsIndex, nextSide);
-        this.#restoreActiveSideWindows(wsIndex);
-        this.#parkInactiveSideWindows(wsIndex);
-
-        const wsKey = String(wsIndex);
-        if (this.#lastLayout[wsKey]) delete this.#lastLayout[wsKey];
-
-        if (this.#isTilingEnabled(wsIndex)) {
-            this.#scheduleRetileBurst(wsIndex, 'side-switch');
-        } else {
-            this.#syncTileBorders(wsIndex, 'side-switch-disabled', false);
-        }
-        this.#notify(`Workspace ${wsIndex + 1}: side ${nextSide + 1}`);
-    }
-
-    #moveFocusedWindowToSideDelta(delta) {
-        const w = this.#getFocusWindow();
-        if (!w || w.window_type !== Meta.WindowType.NORMAL) return;
-        if (this.#isSticky(w)) return;
-
-        const wsIndex = this.#getWorkspaceIndexOfWindow(w);
-        const monIndex = this.#getMonitorIndexOfWindow(w);
-        if (wsIndex === null || monIndex === null) return;
-
-        const k = String(this.#windowKey(w));
-        const fromSide = this.#getWindowSide(wsIndex, k);
-        const toSide = Math.max(0, fromSide + Math.floor(Number(delta) || 0));
-        if (toSide === fromSide) return;
-
-        const beforeTree = this.#getBspTree(wsIndex, monIndex, fromSide);
-        const rem = removeLeafByKey(beforeTree, k);
-        if (rem.changed) this.#setBspTree(wsIndex, monIndex, rem.tree, fromSide);
-
-        this.#setWindowSide(wsIndex, k, toSide);
-        const activeSide = this.#getActiveSideIndex(wsIndex);
-        if (toSide === activeSide) {
-            if (this.#isTilingEnabled(wsIndex)) {
-                Mainloop.idle_add(() => { this.#insertWindowIntoLayout(w, 'side-move-visible', true); return false; });
-            } else {
-                this.#restoreWindowFromParking(w);
-            }
-        } else {
-            this.#parkWindowForSide(w, wsIndex, toSide, activeSide);
-            if (this.#isTilingEnabled(wsIndex)) this.#retileAfterDrag(wsIndex, 'side-move-hidden');
-            this.#syncTileBorders(wsIndex, 'side-move-hidden', false);
-        }
-
-        this.#notify(`Window moved to side ${toSide + 1}`);
-    }
-
-    #redirectFocusToWindowSideIfNeeded(metaWindow) {
-        if (!metaWindow || metaWindow.window_type !== Meta.WindowType.NORMAL) return false;
-
-        const wsIndex = this.#getWorkspaceIndexOfWindow(metaWindow);
-        if (wsIndex === null) return false;
-        if (wsIndex !== this.#getActiveWorkspaceIndex()) return false;
-
-        const k = String(this.#windowKey(metaWindow));
-        const targetSide = this.#getWindowSide(wsIndex, k);
-        const activeSide = this.#getActiveSideIndex(wsIndex);
-        if (targetSide === activeSide) return false;
-
-        const now = Date.now();
-        if (now < (this.#sideFocusRedirectUntil || 0)) return false;
-        this.#sideFocusRedirectUntil = now + 450;
-
-        this.#setActiveSideIndex(wsIndex, targetSide);
-        this.#restoreActiveSideWindows(wsIndex);
-        this.#parkInactiveSideWindows(wsIndex);
-
-        const wsKey = String(wsIndex);
-        if (this.#lastLayout[wsKey]) delete this.#lastLayout[wsKey];
-
-        if (this.#isTilingEnabled(wsIndex)) this.#scheduleRetileBurst(wsIndex, 'focus-side-redirect');
-        else this.#syncTileBorders(wsIndex, 'focus-side-redirect', false);
-
-        this.#notify(`Workspace ${wsIndex + 1}: side ${targetSide + 1}`);
-        return true;
+        if (!candidates.length) return false;
+        const i = Math.max(0, Math.min(candidates.length - 1, Math.floor(Math.random() * candidates.length)));
+        return this.#activateWindow(candidates[i]);
     }
 
     // Compute whether a given tree would violate minimum tile sizes.
@@ -1973,132 +1498,49 @@ class Application {
     }
 
     #getWorkspaceState(wsIndex, create = false) {
-        const wsKey = String(wsIndex);
-        let ws = this.#tilingState.workspaces?.[wsKey] || null;
-        if (!ws && create) {
-            ws = {
-                activeSide: 0,
-                windowSides: Object.create(null),
-                sides: Object.create(null),
-                gapsDisabled: false
-            };
-            ws.sides['0'] = { monitors: Object.create(null) };
-            this.#tilingState.workspaces[wsKey] = ws;
-        }
-        if (!ws) return null;
-
-        if (ws.gapsDisabled === undefined) ws.gapsDisabled = false;
-        if (!ws.windowSides || typeof ws.windowSides !== 'object') ws.windowSides = Object.create(null);
-        if (!ws.sides || typeof ws.sides !== 'object') ws.sides = Object.create(null);
-
-        const active = Number(ws.activeSide);
-        ws.activeSide = (Number.isFinite(active) && active >= 0) ? Math.floor(active) : 0;
-        if (!ws.sides[String(ws.activeSide)] || typeof ws.sides[String(ws.activeSide)] !== 'object')
-            ws.sides[String(ws.activeSide)] = { monitors: Object.create(null) };
-
-        // v1 compatibility (runtime migration)
-        if (ws.monitors && typeof ws.monitors === 'object') {
-            if (!ws.sides['0'] || typeof ws.sides['0'] !== 'object') ws.sides['0'] = { monitors: Object.create(null) };
-            if (!ws.sides['0'].monitors || typeof ws.sides['0'].monitors !== 'object') ws.sides['0'].monitors = ws.monitors;
-        }
-
-        return ws;
+        return this.#sideState ? this.#sideState.getWorkspaceState(wsIndex, create) : null;
     }
 
     #getActiveSideIndex(wsIndex) {
-        const ws = this.#getWorkspaceState(wsIndex, true);
-        return ws ? ws.activeSide : 0;
+        return this.#sideState ? this.#sideState.getActiveSideIndex(wsIndex) : 0;
     }
 
     #setActiveSideIndex(wsIndex, sideIndex) {
-        const ws = this.#getWorkspaceState(wsIndex, true);
-        if (!ws) return 0;
-        const next = Math.max(0, Math.floor(Number(sideIndex) || 0));
-        ws.activeSide = next;
-        if (!ws.sides[String(next)] || typeof ws.sides[String(next)] !== 'object')
-            ws.sides[String(next)] = { monitors: Object.create(null) };
-        this.#scheduleSaveTilingState('active-side-changed');
-        return next;
+        return this.#sideState ? this.#sideState.setActiveSideIndex(wsIndex, sideIndex) : 0;
     }
 
     #getWindowSide(wsIndex, winKey) {
-        const ws = this.#getWorkspaceState(wsIndex, true);
-        if (!ws) return 0;
-        const k = String(winKey || '');
-        if (!k) return ws.activeSide;
-        const raw = ws.windowSides[k];
-        const n = Number(raw);
-        return (Number.isFinite(n) && n >= 0) ? Math.floor(n) : 0;
+        return this.#sideState ? this.#sideState.getWindowSide(wsIndex, winKey) : 0;
     }
 
     #setWindowSide(wsIndex, winKey, sideIndex) {
-        const ws = this.#getWorkspaceState(wsIndex, true);
-        if (!ws) return;
-        const k = String(winKey || '');
-        if (!k) return;
-        ws.windowSides[k] = Math.max(0, Math.floor(Number(sideIndex) || 0));
-        this.#scheduleSaveTilingState('window-side-changed');
+        if (this.#sideState) this.#sideState.setWindowSide(wsIndex, winKey, sideIndex);
     }
 
     #deleteWindowSide(wsIndex, winKey) {
-        const ws = this.#getWorkspaceState(wsIndex, false);
-        if (!ws) return;
-        const k = String(winKey || '');
-        if (!k) return;
-        if (ws.windowSides && ws.windowSides[k] !== undefined) {
-            delete ws.windowSides[k];
-            this.#scheduleSaveTilingState('window-side-deleted');
-        }
+        if (this.#sideState) this.#sideState.deleteWindowSide(wsIndex, winKey);
     }
 
     #ensureSideState(wsIndex, sideIndex) {
-        const ws = this.#getWorkspaceState(wsIndex, true);
-        if (!ws) return null;
-        const sideKey = String(Math.max(0, Math.floor(Number(sideIndex) || 0)));
-        let side = ws.sides[sideKey];
-        if (!side || typeof side !== 'object') {
-            side = { monitors: Object.create(null) };
-            ws.sides[sideKey] = side;
-        }
-        if (!side.monitors || typeof side.monitors !== 'object') side.monitors = Object.create(null);
-        return side;
+        return this.#sideState ? this.#sideState.ensureSideState(wsIndex, sideIndex) : null;
     }
 
     #getSideMonState(wsIndex, sideIndex, monIndex, create = false) {
-        const monKey = String(monIndex);
-        const side = create
-            ? this.#ensureSideState(wsIndex, sideIndex)
-            : this.#getWorkspaceState(wsIndex, false)?.sides?.[String(Math.max(0, Math.floor(Number(sideIndex) || 0)))] || null;
-        if (!side) return null;
-        if (!side.monitors || typeof side.monitors !== 'object') {
-            if (!create) return null;
-            side.monitors = Object.create(null);
-        }
-        let mon = side.monitors[monKey];
-        if (!mon && create) {
-            mon = { tree: null };
-            side.monitors[monKey] = mon;
-        }
-        return mon || null;
+        return this.#sideState ? this.#sideState.getSideMonState(wsIndex, sideIndex, monIndex, create) : null;
     }
 
     #getWsMonState(wsIndex, monIndex, create = false) {
-        return this.#getSideMonState(wsIndex, this.#getActiveSideIndex(wsIndex), monIndex, create);
+        return this.#sideState ? this.#sideState.getWsMonState(wsIndex, monIndex, create) : null;
     }
  
     // ----- v0.66 gaps toggle (per workspace) -----
 
     #isGapsDisabled(wsIndex) {
-        const ws = this.#getWorkspaceState(wsIndex, false);
-        if (!ws || typeof ws !== 'object') return false;
-        return !!ws.gapsDisabled;
+        return this.#sideState ? this.#sideState.isGapsDisabled(wsIndex) : false;
     }
 
     #setGapsDisabled(wsIndex, disabled) {
-        const ws = this.#getWorkspaceState(wsIndex, true);
-        if (!ws) return;
-        ws.gapsDisabled = !!disabled;
-        this.#scheduleSaveTilingState('gaps-toggle');
+        if (this.#sideState) this.#sideState.setGapsDisabled(wsIndex, disabled);
     }
 
     #effectiveGapsForWorkspace(wsIndex) {
@@ -2447,41 +1889,19 @@ class Application {
     }
 
     #getBspTree(wsIndex, monIndex, sideIndex = null) {
-        const side = (sideIndex === null || sideIndex === undefined)
-            ? this.#getActiveSideIndex(wsIndex)
-            : Math.max(0, Math.floor(Number(sideIndex) || 0));
-        const st = this.#getSideMonState(wsIndex, side, monIndex, false);
-        return st ? (st.tree || null) : null;
+        return this.#sideState ? this.#sideState.getBspTree(wsIndex, monIndex, sideIndex) : null;
     }
 
     #setBspTree(wsIndex, monIndex, tree, sideIndex = null) {
-        const side = (sideIndex === null || sideIndex === undefined)
-            ? this.#getActiveSideIndex(wsIndex)
-            : Math.max(0, Math.floor(Number(sideIndex) || 0));
-        const st = this.#getSideMonState(wsIndex, side, monIndex, true);
-        st.tree = tree || null;
-        this.#scheduleSaveTilingState('tree-changed');
+        if (this.#sideState) this.#sideState.setBspTree(wsIndex, monIndex, tree, sideIndex);
     }
 
     #clearSideTrees(wsIndex, sideIndex) {
-        const side = this.#ensureSideState(wsIndex, sideIndex);
-        if (!side) return;
-        side.monitors = Object.create(null);
-        this.#scheduleSaveTilingState('workspace-side-reset');
+        if (this.#sideState) this.#sideState.clearSideTrees(wsIndex, sideIndex);
     }
 
     #clearWorkspaceTrees(wsIndex, activeSideOnly = false) {
-        const ws = this.#getWorkspaceState(wsIndex, false);
-        if (!ws) return;
-        if (activeSideOnly) {
-            this.#clearSideTrees(wsIndex, this.#getActiveSideIndex(wsIndex));
-        } else {
-            ws.sides = Object.create(null);
-            ws.sides[String(this.#getActiveSideIndex(wsIndex))] = { monitors: Object.create(null) };
-            this.#scheduleSaveTilingState('workspace-reset');
-        }
-        const wsKey = String(wsIndex);
-        if (this.#lastLayout[wsKey]) delete this.#lastLayout[wsKey];
+        if (this.#sideState) this.#sideState.clearWorkspaceTrees(wsIndex, activeSideOnly);
     }
 
     #applyDefaultWorkspaceEnable() {
@@ -2540,7 +1960,7 @@ class Application {
 
     #onWindowNeedsRetile(metaWindow, reason) {
         if (!metaWindow) return;
-        if (this.#sideHiddenKeys.has(String(this.#windowKey(metaWindow)))) return;
+        if (this.#sideviews && this.#sideviews.isWindowSideHiddenByKey(String(this.#windowKey(metaWindow)))) return;
         // v0.64/v0.65: floating/sticky windows never trigger reflow.
         if (this.#isUserFloating(metaWindow)) return;
         // v0.68: forced-floating windows never trigger reflow.
@@ -2652,9 +2072,7 @@ class Application {
             try { this.#setWindowFlags(this.#windowKey(metaWindow), false, false); } catch (e) {}
             if (lastWs !== null) this.#deleteWindowSide(lastWs, winKey);
             if (lastWs !== null) this.#scheduleRetile(lastWs, 'window-unmanaged');
-            delete this.#parkRestoreRectByKey[winKey];
-            this.#sideHiddenKeys.delete(winKey);
-            delete this.#sideHiddenModeByKey[winKey];
+            if (this.#sideviews) this.#sideviews.forgetWindow(winKey);
             // v0.682: ensure overlays drop immediately for closed windows.
             this.#scheduleBorderRefreshActive('unmanaged', 0);
             // If the unmanaged window was on the active workspace, refresh overlays quickly.
@@ -3053,23 +2471,6 @@ class Application {
  
     // ----- v0.4 live resize helpers -----
 
-    #isResizeGrabOp(op) {
-        try {
-            if (Meta.GrabOp.RESIZING !== undefined && op === Meta.GrabOp.RESIZING) return true;
-            if (Meta.GrabOp.KEYBOARD_RESIZING !== undefined && op === Meta.GrabOp.KEYBOARD_RESIZING) return true;
-
-            // Directional resize ops (common in Muffin/Mutter)
-            const keys = [
-                'RESIZING_N','RESIZING_S','RESIZING_E','RESIZING_W',
-                'RESIZING_NE','RESIZING_NW','RESIZING_SE','RESIZING_SW',
-            ];
-            for (const k of keys) {
-                if (Meta.GrabOp[k] !== undefined && op === Meta.GrabOp[k]) return true;
-            }
-        } catch (e) {}
-        return false;
-    }
-
     // Fallback inference if we only get Meta.GrabOp.RESIZING without direction.
     #inferResizeDirsFromPointer(metaWindow) {
         const dirs = [];
@@ -3344,16 +2745,6 @@ class Application {
         this.#syncTileBorders(ctx.wsIndex, 'live-resize', true);
     }
 
-    #isMoveGrabOp(op) {
-        if (op === Meta.GrabOp.MOVING) return true;
-        // Some Muffin/Mutter builds use these variants.
-        try {
-            if (Meta.GrabOp.KEYBOARD_MOVING !== undefined && op === Meta.GrabOp.KEYBOARD_MOVING) return true;
-            if (Meta.GrabOp.MOVING_UNCONSTRAINED !== undefined && op === Meta.GrabOp.MOVING_UNCONSTRAINED) return true;
-        } catch (e) {}
-        return false;
-    }
-
     #rectIntersectionArea(a, b) {
         if (!a || !b) return 0;
         const left = Math.max(a.x, b.x);
@@ -3592,96 +2983,57 @@ class Application {
     }
 
     #connectWindowGrabs() {
-        // start snapping when the user starts moving a window
-        this.#signals.connect(global.display, 'grab-op-begin', (display, screen, window, op) => {
-            if (window.window_type !== Meta.WindowType.NORMAL) return Clutter.EVENT_PROPAGATE;
-
-            // v0.4: resizing on tiling-enabled workspaces updates BSP ratios live
-            if (this.#isResizeGrabOp(op)) {
-                if (this.#beginResizeCtx(window, op)) {
-                    return Clutter.EVENT_PROPAGATE;
-                }
-                return Clutter.EVENT_PROPAGATE;
-            }
-
-            if (this.#isMoveGrabOp(op)) {
+        connectWindowGrabs(this.#signals, {
+            onResizeBegin: (window, op) => {
+                this.#beginResizeCtx(window, op);
+            },
+            onMoveBegin: (window) => {
                 const wsIndex = this.#getWorkspaceIndexOfWindow(window);
                 const winKey = this.#windowKey(window);
 
-                // v0.64/v0.65: user-floating/sticky windows are unmanaged by hyprmon during grabs.
-                if (this.#userFloatingKeys.has(String(winKey))) return Clutter.EVENT_PROPAGATE;
-                // v0.68: forced-float windows are unmanaged by hyprmon during grabs.
-                if (this.#isForcedFloat(window)) return Clutter.EVENT_PROPAGATE;
+                if (this.#userFloatingKeys.has(String(winKey))) return;
+                if (this.#isForcedFloat(window)) return;
+                if (wsIndex === null || !this.#isTilingEnabled(wsIndex)) return;
 
-                // v0.5: on tiling-enabled workspaces, MOVING becomes “detach + insert on drop”
-                if (wsIndex !== null && this.#isTilingEnabled(wsIndex)) {
-                    const monIndex = this.#getMonitorIndexOfWindow(window);
-                    const sideIndex = this.#getWindowSide(wsIndex, winKey);
+                const monIndex = this.#getMonitorIndexOfWindow(window);
+                const sideIndex = this.#getWindowSide(wsIndex, winKey);
 
-                    this.#movingWindowKeys.add(winKey);
-                    this.#floatingWindowKeys.add(winKey);
+                this.#movingWindowKeys.add(winKey);
+                this.#floatingWindowKeys.add(winKey);
 
-                    // Persist removal immediately (old slot is gone).
-                    if (monIndex !== null) {
-                        const beforeTree = this.#getBspTree(wsIndex, monIndex, sideIndex);
-                        const rem = removeLeafByKey(beforeTree, winKey);
-                        if (rem.changed) this.#setBspTree(wsIndex, monIndex, rem.tree, sideIndex);
-                    }
-
-                    this.#dragCtx = {
-                        winKey,
-                        wsIndex,
-                        monIndex,
-                        sideIndex
-                    };
-
-                    // Close the gap immediately (retile without the dragged window).
-                    Mainloop.idle_add(() => {
-                        if (!this.#dragCtx || this.#dragCtx.winKey !== winKey) return false;
-                        if (this.#isTilingEnabled(wsIndex)) this.#retileWorkspaceNow(wsIndex, false);
-                        return false;
-                    });
-
-                    return Clutter.EVENT_PROPAGATE;
+                if (monIndex !== null) {
+                    const beforeTree = this.#getBspTree(wsIndex, monIndex, sideIndex);
+                    const rem = removeLeafByKey(beforeTree, winKey);
+                    if (rem.changed) this.#setBspTree(wsIndex, monIndex, rem.tree, sideIndex);
                 }
-            }
-            return Clutter.EVENT_PROPAGATE;
-        });
 
-        // stop snapping when the user stops moving a window
-        this.#signals.connect(global.display, 'grab-op-end', (display, screen, window, op) => {
-            if (window.window_type !== Meta.WindowType.NORMAL) return Clutter.EVENT_PROPAGATE;
+                this.#dragCtx = { winKey, wsIndex, monIndex, sideIndex };
 
-            // v0.4: finish live resize session
-            if (this.#isResizeGrabOp(op)) {
-                // v0.64/v0.65: floating/sticky windows are not live-resized by tiler.
+                Mainloop.idle_add(() => {
+                    if (!this.#dragCtx || this.#dragCtx.winKey !== winKey) return false;
+                    if (this.#isTilingEnabled(wsIndex)) this.#retileWorkspaceNow(wsIndex, false);
+                    return false;
+                });
+            },
+            onResizeEnd: (window) => {
                 try {
-                    if (this.#userFloatingKeys.has(String(this.#windowKey(window)))) return Clutter.EVENT_PROPAGATE;
+                    if (this.#userFloatingKeys.has(String(this.#windowKey(window)))) return;
                 } catch (e) {}
-                if (this.#endResizeCtx(window)) {
-                    return Clutter.EVENT_PROPAGATE;
-                }
-                return Clutter.EVENT_PROPAGATE;
-            }
-
-            if (this.#isMoveGrabOp(op)) {
-                // v0.5 path: insert-on-drop
+                this.#endResizeCtx(window);
+            },
+            onMoveEnd: (window) => {
                 if (this.#dragCtx) {
                     const ctx = this.#dragCtx;
                     this.#dragCtx = null;
-                    // (do not delete keys here; onDragEndInsert does it after commit)
                     this.#onDragEndInsert(window, ctx);
-                    return Clutter.EVENT_PROPAGATE;
+                    return;
                 }
-
-                // safety: in case we ever tracked the key without a ctx
                 try {
                     const k = this.#windowKey(window);
                     this.#floatingWindowKeys.delete(k);
                     this.#movingWindowKeys.delete(k);
                 } catch (e) {}
-            }
-            return Clutter.EVENT_PROPAGATE;
+            },
         });
     }
 }

@@ -1,6 +1,113 @@
 # CHANGELOG
 Changelog for hyprmon -project.
 
+## v0.6853 Refactor Step 4 - window-grabs.js & fix side-switch focus
+
+### 1. Extracted window-grabs.js
+
+  - New file: window-grabs.js
+  - Provides:
+      - connectWindowGrabs(signalManager, handlers)
+      - isResizeGrabOp(op)
+      - isMoveGrabOp(op)
+  - application.js now delegates grab-op event wiring to this module via callback handlers.
+  - Old in-class #isResizeGrabOp, #isMoveGrabOp, and large #connectWindowGrabs signal body
+    were replaced by a thin orchestration wrapper.
+
+###  2. Fixed side-switch focus behavior
+
+  - sideviews.js switchActiveWorkspaceSide(...) now requests focus on the target side after
+    switching.
+  - Added app callback:
+      - focusWindowOnSide(wsIndex, sideIndex) in application.js
+      - Selects a window from target side and activates it (random pick from eligible
+        windows).
+  - This addresses the bug where focus stayed on the old side after side change.
+
+## v0.6852 Refactor Step 3 - extract side-state.js
+### Added side-state.js
+      - class SideState
+      - Owns:
+          - workspace/side normalization and migration-safe shape handling
+          - active side getters/setters
+          - per-window side mapping
+          - side/monitor tree access
+          - BSP tree get/set
+          - workspace/side tree clearing
+          - per-workspace gapsDisabled state
+
+### Updated application.js
+      - Added #sideState delegate initialization.
+      - Replaced large internal state methods with thin wrappers:
+          - #getWorkspaceState, #getActiveSideIndex, #setActiveSideIndex
+          - #getWindowSide, #setWindowSide, #deleteWindowSide
+          - #ensureSideState, #getSideMonState, #getWsMonState
+          - #isGapsDisabled, #setGapsDisabled
+          - #getBspTree, #setBspTree
+          - #clearSideTrees, #clearWorkspaceTrees
+      - Keeps existing call sites unchanged, so behavior remains stable.
+      - destroy() now nulls #sideState.
+
+## v0.6851 Refactor Step 2 - extract sideviews.js
+  - Added new module: sideviews.js
+      - Owns sideview state/behavior:
+          - parking + restore geometry
+          - hidden-window fallback (actor.hide / minimize)
+          - side switch
+          - move focused window to side
+          - focus redirect to correct side
+          - side-hidden tracking + cleanup
+      - Public API used by Application:
+          - destroy()
+          - isWindowSideHiddenByKey(winKey)
+          - forgetWindow(winKey)
+          - restoreActiveSideWindows(wsIndex)
+          - parkInactiveSideWindows(wsIndex)
+          - switchActiveWorkspaceSide(delta)
+          - moveFocusedWindowToSideDelta(delta)
+          - redirectFocusToWindowSideIfNeeded(metaWindow)
+  - Updated application.js
+      - Imports and instantiates Sideviews with explicit callbacks.
+      - Replaced large in-class sideview method block with thin delegating wrappers.
+      - Replaced direct side-hidden state checks with delegate calls:
+          - #onWindowNeedsRetile(...) uses isWindowSideHiddenByKey(...)
+          - unmanaged cleanup uses forgetWindow(...)
+      - destroy() now calls this.#sideviews.destroy() and no longer manages side-hidden
+        internals directly.
+      - Removed now-unused in-class sideview state fields and helper implementations.
+
+## v0.6850a Refactor application.js monolith into modules step1
+
+### Step 1 refactor is done: 
+Application now delegates HUD notifications, hotkey registration, and forced-float rule parsing to separate modules.
+
+#### New modules
+
+  - hud-notifier.js
+      - class HudNotifier
+      - API: constructor(getSettingsData, getActiveMonitorIndex), notify(message), destroy()
+      - Contains former HUD logic (#ensureHud/#positionHud/#getHudConfig/#notify behavior).
+  - hotkeys.js
+      - class Hotkeys
+      - API: constructor(getSettingsData, handlers), enable(), disable()
+      - Owns full hotkey map + (re)registration/removal.
+  - forced-float-rules.js
+      - compileForcedFloatRules(raw)
+      - Owns parsing/compilation of regex rules.
+
+#### Application orchestration changes
+
+  - Updated imports and added delegates in application.js.
+  - Application now instantiates:
+      - this.#hudNotifier
+      - this.#hotkeys
+  - Kept internal call sites stable via delegating wrappers:
+      - #disableTilingHotkeys() -> this.#hotkeys.disable()
+      - #enableTilingHotkeys() -> this.#hotkeys.enable()
+      - #notify() -> this.#hudNotifier.notify(...)
+      - #compileForcedFloatRules() -> compileForcedFloatRules(...)
+  - Added proper cleanup in destroy() for HUD delegate.
+
 ## v0.6845 Hyprmon now uses its own in-extension notification HUD instead of Cinnamon
   queued notifications.
 
