@@ -59,12 +59,14 @@ class TilingStateIO {
                             activeSide: 0,
                             windowSides: Object.create(null),
                             sides: Object.create(null),
-                            gapsDisabled: false
+                            gapsDisabled: false,
+                            opacityDisabled: false
                         };
                         data.workspaces[wsKey].sides['0'] = { monitors: Object.create(null) };
                         continue;
                     }
                     if (ws.gapsDisabled === undefined) ws.gapsDisabled = false;
+                    if (ws.opacityDisabled === undefined) ws.opacityDisabled = false;
 
                     if (!ws.windowSides || typeof ws.windowSides !== 'object') ws.windowSides = Object.create(null);
 

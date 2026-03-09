@@ -1,6 +1,47 @@
 # CHANGELOG
 Changelog for hyprmon -project.
 
+## v0.686 Add per workspace toggleable auto-window-opacity
+
+### Added/Updated
+  - New module: window-opacity.js
+      - Auto-opacity engine (focused/unfocused/fullscreen-maximized)
+      - Dialog/utility inclusion flags
+      - Signal-driven + interval refresh
+      - Restores all window opacity on destroy
+  - Extended side/workspace state: side-state.js
+      - Added opacityDisabled per workspace
+      - Added APIs:
+          - isOpacityDisabled(wsIndex)
+          - setOpacityDisabled(wsIndex, disabled)
+  - Persisted migration/defaults: tiling-state-io.js
+      - Workspace defaults now include opacityDisabled: false
+      - Migrates older state by defaulting missing opacityDisabled to false
+  - Settings added: settings-schema.json
+      - autoOpacityEnabled
+      - opacityFullscreenMaximized
+      - opacityFocused
+      - opacityUnfocused
+      - opacityRefreshIntervalMs
+      - opacityAffectDialogs
+      - opacityAffectUtilityWindows
+      - opacityToggleHotkey (default <Super>o)
+  - Hotkey integration: hotkeys.js
+      - Added hyprmon-toggle-opacity -> toggleOpacityOnActiveWorkspace
+  - Application wiring: application.js
+      - Instantiates WindowOpacity module
+      - Binds opacity settings changes to module refresh/restart
+      - Added per-workspace toggle method:
+          - #toggleOpacityOnActiveWorkspace()
+      - Added side-state wrappers for opacity enable/disable checks
+
+### Behavior now
+
+  - Global auto-opacity is controlled by settings (autoOpacityEnabled).
+  - Per-workspace override works via hotkey:
+      - Workspace N: auto-opacity DISABLED/ENABLED
+  - Per-workspace toggle is persisted in tiling state.
+
 ## v0.6853 Refactor Step 4 - window-grabs.js & fix side-switch focus
 
 ### 1. Extracted window-grabs.js

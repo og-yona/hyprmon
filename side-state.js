@@ -29,7 +29,8 @@ class SideState {
                 activeSide: 0,
                 windowSides: Object.create(null),
                 sides: Object.create(null),
-                gapsDisabled: false
+                gapsDisabled: false,
+                opacityDisabled: false
             };
             ws.sides['0'] = { monitors: Object.create(null) };
             state.workspaces[wsKey] = ws;
@@ -37,6 +38,7 @@ class SideState {
         if (!ws) return null;
 
         if (ws.gapsDisabled === undefined) ws.gapsDisabled = false;
+        if (ws.opacityDisabled === undefined) ws.opacityDisabled = false;
         if (!ws.windowSides || typeof ws.windowSides !== 'object') ws.windowSides = Object.create(null);
         if (!ws.sides || typeof ws.sides !== 'object') ws.sides = Object.create(null);
 
@@ -146,6 +148,19 @@ class SideState {
         if (!ws) return;
         ws.gapsDisabled = !!disabled;
         if (this.#onSave) this.#onSave('gaps-toggle');
+    }
+
+    isOpacityDisabled(wsIndex) {
+        const ws = this.getWorkspaceState(wsIndex, false);
+        if (!ws || typeof ws !== 'object') return false;
+        return !!ws.opacityDisabled;
+    }
+
+    setOpacityDisabled(wsIndex, disabled) {
+        const ws = this.getWorkspaceState(wsIndex, true);
+        if (!ws) return;
+        ws.opacityDisabled = !!disabled;
+        if (this.#onSave) this.#onSave('opacity-toggle');
     }
 
     getBspTree(wsIndex, monIndex, sideIndex = null) {

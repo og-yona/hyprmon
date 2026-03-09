@@ -18,6 +18,7 @@ const { compileForcedFloatRules } = require('./forced-float-rules');
 const { Sideviews } = require('./sideviews');
 const { SideState } = require('./side-state');
 const { connectWindowGrabs } = require('./window-grabs');
+const { WindowOpacity } = require('./window-opacity');
 
 // The application class is only constructed once and is the main entry
 // of the extension.
@@ -110,6 +111,7 @@ class Application {
     #hotkeys = null;
     #sideviews = null;
     #sideState = null;
+    #windowOpacity = null;
  
     // v0.63: remember last focused tile per workspace (and monitor) for "split active window"
     // wsIndex -> { key, monIndex, ts }
@@ -140,7 +142,9 @@ class Application {
                          'changeShapeLeftHotkey','changeShapeRightHotkey','changeShapeUpHotkey','changeShapeDownHotkey',
                          // v2 sideviews
                          'sideviewPrevHotkey','sideviewNextHotkey',
-                         'moveWindowToPrevSideHotkey','moveWindowToNextSideHotkey']) {
+                         'moveWindowToPrevSideHotkey','moveWindowToNextSideHotkey',
+                         // v2 auto-opacity
+                         'opacityToggleHotkey']) {
             this.#settings.bindProperty(Settings.BindingDirection.IN, k, k, this.#enableTilingHotkeys);
         }
 
@@ -191,6 +195,7 @@ class Application {
             () => this.#settings?.settingsData || Object.create(null),
             {
                 toggleGapsOnActiveWorkspace: this.#toggleGapsOnActiveWorkspace.bind(this),
+                toggleOpacityOnActiveWorkspace: this.#toggleOpacityOnActiveWorkspace.bind(this),
 
                 focusNeighborLeft: () => this.#focusNeighborDir('W'),
                 focusNeighborRight: () => this.#focusNeighborDir('E'),
@@ -265,6 +270,26 @@ class Application {
                 if (this.#lastLayout[wsKey]) delete this.#lastLayout[wsKey];
             }
         );
+        this.#windowOpacity = new WindowOpacity({
+            getSettingsData: () => this.#settings?.settingsData || Object.create(null),
+            getWorkspaceIndexOfWindow: (w) => this.#getWorkspaceIndexOfWindow(w),
+            isWorkspaceOpacityEnabled: (wsIndex) => this.#isWorkspaceOpacityEnabled(wsIndex),
+        });
+
+        const onOpacitySettingsChanged = () => {
+            try { if (this.#windowOpacity) this.#windowOpacity.onSettingsChanged(); } catch (e) {}
+        };
+        for (const k of [
+            'autoOpacityEnabled',
+            'opacityFullscreenMaximized',
+            'opacityFocused',
+            'opacityUnfocused',
+            'opacityRefreshIntervalMs',
+            'opacityAffectDialogs',
+            'opacityAffectUtilityWindows',
+        ]) {
+            this.#settings.bindProperty(Settings.BindingDirection.IN, k, k, onOpacitySettingsChanged);
+        }
 
         this.#applyDefaultWorkspaceEnable();
         this.#enableTilingHotkeys();
@@ -328,6 +353,8 @@ class Application {
         try { if (this.#sideviews) this.#sideviews.destroy(); } catch (e) {}
         this.#sideviews = null;
         this.#sideState = null;
+        try { if (this.#windowOpacity) this.#windowOpacity.destroy(); } catch (e) {}
+        this.#windowOpacity = null;
  
         // v0.682: cleanup border timers
         if (this.#borderRefreshTimer) {
@@ -1543,6 +1570,18 @@ class Application {
         if (this.#sideState) this.#sideState.setGapsDisabled(wsIndex, disabled);
     }
 
+    #isOpacityDisabled(wsIndex) {
+        return this.#sideState ? this.#sideState.isOpacityDisabled(wsIndex) : false;
+    }
+
+    #setOpacityDisabled(wsIndex, disabled) {
+        if (this.#sideState) this.#sideState.setOpacityDisabled(wsIndex, disabled);
+    }
+
+    #isWorkspaceOpacityEnabled(wsIndex) {
+        return !this.#isOpacityDisabled(wsIndex);
+    }
+
     #effectiveGapsForWorkspace(wsIndex) {
         const gapsOff = this.#isGapsDisabled(wsIndex);
         const sd = this.#settings.settingsData || Object.create(null);
@@ -1564,6 +1603,14 @@ class Application {
         this.#setGapsDisabled(wsIndex, nextDisabled);
         this.#scheduleRetileBurst(wsIndex, 'gaps-toggle');
         this.#notify(`Workspace ${wsIndex + 1}: gaps ${nextDisabled ? 'DISABLED' : 'ENABLED'}`);
+    }
+
+    #toggleOpacityOnActiveWorkspace() {
+        const wsIndex = this.#getActiveWorkspaceIndex();
+        const nextDisabled = !this.#isOpacityDisabled(wsIndex);
+        this.#setOpacityDisabled(wsIndex, nextDisabled);
+        try { if (this.#windowOpacity) this.#windowOpacity.refreshSoon(); } catch (e) {}
+        this.#notify(`Workspace ${wsIndex + 1}: auto-opacity ${nextDisabled ? 'DISABLED' : 'ENABLED'}`);
     }
  
     // ----- v0.67 keyboard focus/swap/grow helpers -----

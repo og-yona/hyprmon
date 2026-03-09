@@ -9,6 +9,7 @@ class Hotkeys {
     // key id -> settings key -> handler key
     static BINDINGS = [
         ['hyprmon-toggle-gaps', 'gapsToggleHotkey', 'toggleGapsOnActiveWorkspace'],
+        ['hyprmon-toggle-opacity', 'opacityToggleHotkey', 'toggleOpacityOnActiveWorkspace'],
 
         ['hyprmon-focus-left', 'focusLeftHotkey', 'focusNeighborLeft'],
         ['hyprmon-focus-right', 'focusRightHotkey', 'focusNeighborRight'],
