@@ -43,23 +43,60 @@ class TilingStateIO {
             if (!data.workspaces || typeof data.workspaces !== 'object') {
                 data.workspaces = Object.create(null);
             }
-            // v0.66: per-workspace flags live under data.workspaces[wsKey]
-            // Ensure shape: { monitors: {...}, gapsDisabled?: bool }
+            // v2 sideviews:
+            // Ensure shape:
+            // {
+            //   activeSide: number,
+            //   windowSides: { [winKey]: sideIndex },
+            //   sides: { [sideIndex]: { monitors: {...} } },
+            //   gapsDisabled?: bool
+            // }
             try {
                 for (const wsKey in data.workspaces) {
                     const ws = data.workspaces[wsKey];
                     if (!ws || typeof ws !== 'object') {
-                        data.workspaces[wsKey] = { monitors: Object.create(null) };
+                        data.workspaces[wsKey] = {
+                            activeSide: 0,
+                            windowSides: Object.create(null),
+                            sides: Object.create(null),
+                            gapsDisabled: false
+                        };
+                        data.workspaces[wsKey].sides['0'] = { monitors: Object.create(null) };
                         continue;
                     }
-                    if (!ws.monitors || typeof ws.monitors !== 'object') ws.monitors = Object.create(null);
                     if (ws.gapsDisabled === undefined) ws.gapsDisabled = false;
+
+                    if (!ws.windowSides || typeof ws.windowSides !== 'object') ws.windowSides = Object.create(null);
+
+                    // migrate v1 { monitors: {...} } -> v2 { sides: { "0": { monitors } } }
+                    const oldMonitors = (ws.monitors && typeof ws.monitors === 'object')
+                        ? ws.monitors
+                        : Object.create(null);
+                    if (!ws.sides || typeof ws.sides !== 'object') ws.sides = Object.create(null);
+                    if (!ws.sides['0'] || typeof ws.sides['0'] !== 'object') ws.sides['0'] = { monitors: oldMonitors };
+                    else if (!ws.sides['0'].monitors || typeof ws.sides['0'].monitors !== 'object') ws.sides['0'].monitors = oldMonitors;
+
+                    // normalize side entries
+                    for (const sideKey in ws.sides) {
+                        const side = ws.sides[sideKey];
+                        if (!side || typeof side !== 'object') {
+                            ws.sides[sideKey] = { monitors: Object.create(null) };
+                            continue;
+                        }
+                        if (!side.monitors || typeof side.monitors !== 'object') side.monitors = Object.create(null);
+                    }
+
+                    const active = Number(ws.activeSide);
+                    ws.activeSide = (Number.isFinite(active) && active >= 0) ? Math.floor(active) : 0;
+                    if (!ws.sides[String(ws.activeSide)]) ws.sides[String(ws.activeSide)] = { monitors: Object.create(null) };
+
+                    // keep legacy field harmlessly if present; runtime reads v2 fields.
                 }
             } catch (e) {}
             // v0.64/v0.65: per-window flags (floating/sticky) persisted for extension reloads
             if (!data.windowFlags || typeof data.windowFlags !== 'object')
                 data.windowFlags = Object.create(null);
-            if (!data.version) data.version = 1;
+            if (!data.version || data.version < 2) data.version = 2;
 
             return data;
         } catch (e) {
@@ -72,7 +109,7 @@ class TilingStateIO {
         try {
             this.#ensureDir();
             const file = Gio.File.new_for_path(this.#filePath());
-            const jsonData = JSON.stringify(state || { version: 1, workspaces: Object.create(null) }, null, 2);
+            const jsonData = JSON.stringify(state || { version: 2, workspaces: Object.create(null) }, null, 2);
 
             const [success] = file.replace_contents(
                 jsonData,

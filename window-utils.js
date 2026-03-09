@@ -4,6 +4,86 @@
 const Main = imports.ui.main;
 const Panel = imports.ui.panel;
 const Meta = imports.gi.Meta;
+  
+// Per-monitor move/resize correction (learned).
+// Some stacked-monitor layouts end up applying a consistent translation when calling move_resize_frame().
+// We learn (dx,dy) per monitor by observing actual frame rects after a move.
+let _moveAdjustByMon = Object.create(null); // monIndex -> { dx:number, dy:number }
+ 
+// ---- coordinate normalization (stacked monitors can expose negative x/y, while window coords may be rebased) ----
+let _coordSig = '';
+let _coordShift = { dx: 0, dy: 0 };
+
+function _rectContains(outer, inner, eps = 2) {
+    if (!outer || !inner) return false;
+    const e = Math.max(0, Math.floor(Number(eps) || 0));
+    return (
+        inner.x >= outer.x - e &&
+        inner.y >= outer.y - e &&
+        (inner.x + inner.width) <= (outer.x + outer.width) + e &&
+        (inner.y + inner.height) <= (outer.y + outer.height) + e
+    );
+}
+
+function _getMonitorGeometries() {
+    const out = [];
+    try {
+        const n = global.display.get_n_monitors();
+        for (let i = 0; i < n; i++) {
+            const g = global.display.get_monitor_geometry(i);
+            out.push({ x: g.x, y: g.y, width: g.width, height: g.height });
+        }
+    } catch (e) {}
+    return out;
+}
+
+function _computeCoordShift() {
+    const geoms = _getMonitorGeometries();
+    const sig = geoms.map(g => `${g.x},${g.y},${g.width},${g.height}`).join('|');
+    if (sig && sig === _coordSig) return _coordShift;
+    _coordSig = sig;
+
+    _coordShift = { dx: 0, dy: 0 };
+    if (!geoms.length) return _coordShift;
+
+    let minX = 0, minY = 0;
+    for (const g of geoms) { minX = Math.min(minX, g.x); minY = Math.min(minY, g.y); }
+    const cand = { dx: minX < 0 ? -minX : 0, dy: minY < 0 ? -minY : 0 };
+    if (cand.dx === 0 && cand.dy === 0) return _coordShift;
+
+    // Validate shift against real windows: if shifted monitor boxes contain more windows than raw boxes, enable shift.
+    let okRaw = 0, okShift = 0, total = 0;
+    try {
+        const actors = global.get_window_actors ? global.get_window_actors() : [];
+        for (const a of actors) {
+            const w = a && a.meta_window ? a.meta_window : null;
+            if (!w || w.window_type !== Meta.WindowType.NORMAL) continue;
+            let mon = null; try { mon = w.get_monitor(); } catch (e) {}
+            if (mon === null || mon < 0 || mon >= geoms.length) continue;
+            let fr = null; try { fr = w.get_frame_rect(); } catch (e) {}
+            if (!fr) continue;
+            total++;
+            const rawBox = geoms[mon];
+            const shiftedBox = { x: rawBox.x + cand.dx, y: rawBox.y + cand.dy, width: rawBox.width, height: rawBox.height };
+            if (_rectContains(rawBox, fr, 6)) okRaw++;
+            if (_rectContains(shiftedBox, fr, 6)) okShift++;
+        }
+    } catch (e) {}
+
+    // Require a clear win to avoid breaking setups that *do* use negative coords natively.
+    if (total > 0) {
+        // Old threshold (okShift > okRaw + 3) fails when there are only a few windows.
+        const need = Math.max(1, Math.ceil(total * 0.6));
+        if (okShift >= need && okShift > okRaw) _coordShift = cand;
+    }
+    return _coordShift;
+}
+
+function _applyCoordShift(rect) {
+    const s = _computeCoordShift();
+    if (!rect || (!s.dx && !s.dy)) return rect;
+    return { x: rect.x + s.dx, y: rect.y + s.dy, width: rect.width, height: rect.height };
+}
 
 // get the screen area excluding the panels
 function getUsableScreenArea(displayIdx) {
@@ -13,6 +93,29 @@ function getUsableScreenArea(displayIdx) {
         return null;
     }
 
+    // Prefer compositor-provided work area (handles stacked monitors + struts correctly).
+    try {
+        if (global.display && typeof global.display.get_work_area_for_monitor === 'function') {
+            const wa = global.display.get_work_area_for_monitor(displayIdx);
+            return _applyCoordShift({ x: wa.x, y: wa.y, width: wa.width, height: wa.height });
+        }
+    } catch (e) {}
+    try {
+        // Some Muffin/Mutter builds expose get_monitor_workarea()
+        if (global.display && typeof global.display.get_monitor_workarea === 'function') {
+            const wa = global.display.get_monitor_workarea(displayIdx);
+            return _applyCoordShift({ x: wa.x, y: wa.y, width: wa.width, height: wa.height });
+        }
+    } catch (e) {}
+    try {
+        // Shell-style layout manager API (best-effort)
+        if (Main && Main.layoutManager && typeof Main.layoutManager.getWorkAreaForMonitor === 'function') {
+            const wa = Main.layoutManager.getWorkAreaForMonitor(displayIdx);
+            return _applyCoordShift({ x: wa.x, y: wa.y, width: wa.width, height: wa.height });
+        }
+    } catch (e) {}
+
+    // Fallback: old panel-based approach
     const display = global.display.get_monitor_geometry(displayIdx);
 
     let top = display.y;
@@ -31,10 +134,11 @@ function getUsableScreenArea(displayIdx) {
                     bottom -= panel.height;
                     break;
                 case Panel.PanelLoc.left:
-                    left += panel.height;
+                    // left/right panels should use width; some objects expose width, fallback to height
+                    left += (panel.width !== undefined ? panel.width : panel.height);
                     break;
                 case Panel.PanelLoc.right:
-                    right -= panel.height;
+                    right -= (panel.width !== undefined ? panel.width : panel.height);
                     break;
             }
         }
@@ -42,7 +146,7 @@ function getUsableScreenArea(displayIdx) {
 
     let width = Math.max(0, right - left);
     let height = Math.max(0, bottom - top);
-    return { x: left, y: top, width: width, height: height };
+    return _applyCoordShift({ x: left, y: top, width: width, height: height });
 }
  
 // shrink a rect by outerGap on all sides (clamped)
@@ -234,11 +338,66 @@ function snapToRect(metaWindow, rect) {
             metaWindow.tile(Meta.TileMode.NONE);
         }
     } catch (e) {}
+ 
+    // Determine monitor for per-monitor correction (best effort).
+    let mon = null;
+    try { if (typeof metaWindow.get_monitor === 'function') mon = metaWindow.get_monitor(); } catch (e) {}
+    if (!Number.isFinite(mon)) mon = null;
 
-    metaWindow.move_resize_frame(
-        false,
-        rect.x, rect.y,
-        rect.width, rect.height);
+    let adj = null;
+    if (mon !== null) {
+        adj = _moveAdjustByMon[String(mon)] || { dx: 0, dy: 0 };
+        // keep sane bounds
+        adj.dx = Number(adj.dx) || 0;
+        adj.dy = Number(adj.dy) || 0;
+        if (Math.abs(adj.dx) > 20000) adj.dx = 0;
+        if (Math.abs(adj.dy) > 20000) adj.dy = 0;
+    }
+
+    const x = Math.round(rect.x);
+    const y = Math.round(rect.y);
+    const w = Math.max(1, Math.round(rect.width));
+    const h = Math.max(1, Math.round(rect.height));
+
+    // Apply learned correction (request = desired - adj).
+    const reqX0 = (adj ? (x - Math.round(adj.dx)) : x);
+    const reqY0 = (adj ? (y - Math.round(adj.dy)) : y);
+
+    // Keep the old, most reliable behavior: user_op=false.
+    try { metaWindow.move_resize_frame(false, reqX0, reqY0, w, h); } catch (e) {}
+
+    // Learn/adjust if the WM applied a translation (very common in stacked-monitor weirdness).
+    try {
+        const fr2 = metaWindow.get_frame_rect();
+        if (fr2 && mon !== null) {
+            const errX = Math.round(fr2.x - x);
+            const errY = Math.round(fr2.y - y);
+
+            const bigEnough = (Math.abs(errX) > 20) || (Math.abs(errY) > 20);
+            const sane = (Math.abs(errX) < 20000) && (Math.abs(errY) < 20000);
+
+            if (bigEnough && sane) {
+                // err = actual - desired = (T - adj). Move adj toward T.
+                const alpha = 0.65;
+                adj.dx = (Number(adj.dx) || 0) + errX * alpha;
+                adj.dy = (Number(adj.dy) || 0) + errY * alpha;
+                _moveAdjustByMon[String(mon)] = adj;
+
+                // One immediate retry using the updated correction (converges fast).
+                const reqX1 = x - Math.round(adj.dx);
+                const reqY1 = y - Math.round(adj.dy);
+                try { metaWindow.move_resize_frame(false, reqX1, reqY1, w, h); } catch (e2) {}
+            } else if (adj) {
+                // Slowly decay correction when it no longer seems needed.
+                const decay = 0.85;
+                adj.dx *= decay;
+                adj.dy *= decay;
+                if (Math.abs(adj.dx) < 0.5) adj.dx = 0;
+                if (Math.abs(adj.dy) < 0.5) adj.dy = 0;
+                _moveAdjustByMon[String(mon)] = adj;
+            }
+        }
+    } catch (e) {}
 }
 
 // Export the module

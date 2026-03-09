@@ -4,12 +4,10 @@ This is a pragmatic roadmap: deliver a usable MVP quickly, then iterate toward â
 
 ---
 
-## See CHANGELOG.md from project start v0 -> v0.682
+## See CHANGELOG.md from project start v0 -> v0.683
 At current state v0.68 hyprmon is "daily driveable".
 
 ### v0.683-689 Final Touches (?)
-- Add special colored borders/overlays for floating and sticky (floating default very whitish green, sticky default dark magentaish), "active sticky/float" color would ideally blend the users default active & the float/stick-color.
-- 
 - What is missing? 
 - Do we have bugs/memory leaks?
 - Technical Debt..?

@@ -31,9 +31,9 @@ class Application {
     // debounce timers per workspace (wsIndex -> sourceId)
     #retileTimers = Object.create(null);
  
-    // tiling persistent state (v0.2 -> v0.66)
-    // { version: 1, workspaces: {...}, windowFlags: { [winKey]: { floating?:bool, sticky?:bool } } }
-    #tilingState = { version: 1, workspaces: Object.create(null), windowFlags: Object.create(null) };
+    // tiling persistent state (v2 sideviews)
+    // { version: 2, workspaces: {...}, windowFlags: { [winKey]: { floating?:bool, sticky?:bool } } }
+    #tilingState = { version: 2, workspaces: Object.create(null), windowFlags: Object.create(null) };
     #saveStateTimer = 0;
 
     // last computed tile rects (used for drag-to-reorder target testing)
@@ -100,6 +100,9 @@ class Application {
 
     // v0.62: opt-in geometry animation timers (key -> sourceId)
     #geomAnimByKey = Object.create(null);
+
+    // v2 sideviews: remembered geometry before parking off-screen (key -> frameRect)
+    #parkRestoreRectByKey = Object.create(null);
  
     // v0.63: remember last focused tile per workspace (and monitor) for "split active window"
     // wsIndex -> { key, monIndex, ts }
@@ -113,7 +116,7 @@ class Application {
 
     constructor(uuid) {
         this.#tilingStateIO = new TilingStateIO(uuid);
-        this.#tilingState = this.#tilingStateIO.loadState() || { version: 1, workspaces: Object.create(null), windowFlags: Object.create(null) };
+        this.#tilingState = this.#tilingStateIO.loadState() || { version: 2, workspaces: Object.create(null), windowFlags: Object.create(null) };
         if (!this.#tilingState.windowFlags || typeof this.#tilingState.windowFlags !== 'object')
             this.#tilingState.windowFlags = Object.create(null);
 
@@ -127,7 +130,10 @@ class Application {
                          'growLeftHotkey','growRightHotkey','growUpHotkey','growDownHotkey',
                          // v0.671
                          'shrinkLeftHotkey','shrinkRightHotkey','shrinkUpHotkey','shrinkDownHotkey',
-                         'changeShapeLeftHotkey','changeShapeRightHotkey','changeShapeUpHotkey','changeShapeDownHotkey']) {
+                         'changeShapeLeftHotkey','changeShapeRightHotkey','changeShapeUpHotkey','changeShapeDownHotkey',
+                         // v2 sideviews
+                         'sideviewPrevHotkey','sideviewNextHotkey',
+                         'moveWindowToPrevSideHotkey','moveWindowToNextSideHotkey']) {
             this.#settings.bindProperty(Settings.BindingDirection.IN, k, k, this.#enableTilingHotkeys);
         }
 
@@ -163,6 +169,7 @@ class Application {
             'tileBorderActiveWidth', 'tileBorderInactiveWidth',
             'tileBorderActiveColor', 'tileBorderInactiveColor',
             'tileBorderRadius',
+            'floatStickyBordersEnabled', 'floatBorderColor', 'stickyBorderColor',
             'overlayAnimate', 'overlayAnimateDurationMs',
             'geometryAnimate', 'geometryAnimateDurationMs',
         ]) {
@@ -321,6 +328,11 @@ class Application {
         Main.keybindingManager.removeHotKey('hyprmon-change-shape-right');
         Main.keybindingManager.removeHotKey('hyprmon-change-shape-up');
         Main.keybindingManager.removeHotKey('hyprmon-change-shape-down');
+        // v2 sideviews
+        Main.keybindingManager.removeHotKey('hyprmon-side-prev');
+        Main.keybindingManager.removeHotKey('hyprmon-side-next');
+        Main.keybindingManager.removeHotKey('hyprmon-side-move-prev');
+        Main.keybindingManager.removeHotKey('hyprmon-side-move-next');
     }
 
     #enableTilingHotkeys() {
@@ -355,6 +367,11 @@ class Application {
         const shapeRightBinding  = (this.#settings.settingsData.changeShapeRightHotkey?.value || '').trim();
         const shapeUpBinding     = (this.#settings.settingsData.changeShapeUpHotkey?.value || '').trim();
         const shapeDownBinding   = (this.#settings.settingsData.changeShapeDownHotkey?.value || '').trim();
+        // v2 sideviews
+        const sidePrevBinding = (this.#settings.settingsData.sideviewPrevHotkey?.value || '').trim();
+        const sideNextBinding = (this.#settings.settingsData.sideviewNextHotkey?.value || '').trim();
+        const sideMovePrevBinding = (this.#settings.settingsData.moveWindowToPrevSideHotkey?.value || '').trim();
+        const sideMoveNextBinding = (this.#settings.settingsData.moveWindowToNextSideHotkey?.value || '').trim();
 
         if (gapsToggleBinding) {
             Main.keybindingManager.addHotKey(
@@ -393,6 +410,12 @@ class Application {
         if (shapeRightBinding) Main.keybindingManager.addHotKey('hyprmon-change-shape-right', shapeRightBinding, () => this.#changeShapeDir('E'));
         if (shapeUpBinding) Main.keybindingManager.addHotKey('hyprmon-change-shape-up', shapeUpBinding, () => this.#changeShapeDir('N'));
         if (shapeDownBinding) Main.keybindingManager.addHotKey('hyprmon-change-shape-down', shapeDownBinding, () => this.#changeShapeDir('S'));
+
+        // v2 sideviews
+        if (sidePrevBinding) Main.keybindingManager.addHotKey('hyprmon-side-prev', sidePrevBinding, () => this.#switchActiveWorkspaceSide(-1));
+        if (sideNextBinding) Main.keybindingManager.addHotKey('hyprmon-side-next', sideNextBinding, () => this.#switchActiveWorkspaceSide(1));
+        if (sideMovePrevBinding) Main.keybindingManager.addHotKey('hyprmon-side-move-prev', sideMovePrevBinding, () => this.#moveFocusedWindowToSideDelta(-1));
+        if (sideMoveNextBinding) Main.keybindingManager.addHotKey('hyprmon-side-move-next', sideMoveNextBinding, () => this.#moveFocusedWindowToSideDelta(1));
 
         if (toggleBinding) {
             Main.keybindingManager.addHotKey(
@@ -596,7 +619,12 @@ class Application {
     #listManagedTilingCandidates(wsIndex, monIndex) {
         let wins = listTilingCandidates(wsIndex, monIndex) || [];
         if (!wins.length) return wins;
-        return wins.filter(w => !this.#isForcedFloat(w));
+        const activeSide = this.#getActiveSideIndex(wsIndex);
+        return wins.filter(w => {
+            if (this.#isForcedFloat(w)) return false;
+            const k = String(this.#windowKey(w));
+            return this.#getWindowSide(wsIndex, k) === activeSide;
+        });
     }
 
     #retileAllEnabledWorkspaces(reason = '') {
@@ -606,6 +634,195 @@ class Application {
             .filter(n => Number.isFinite(n) && this.#enabledWorkspaces[n]);
         if (!enabledWs.length) return;
         for (const ws of enabledWs) this.#scheduleRetile(ws, reason || 'retile-all');
+    }
+
+    #getGlobalMonitorBounds() {
+        let left = Infinity;
+        let top = Infinity;
+        let right = -Infinity;
+        let bottom = -Infinity;
+        let maxWidth = 0;
+        let maxHeight = 0;
+
+        const n = global.display.get_n_monitors();
+        for (let i = 0; i < n; i++) {
+            let r = null;
+            try { r = global.display.get_monitor_geometry(i); } catch (e) {}
+            if (!r) continue;
+            left = Math.min(left, r.x);
+            top = Math.min(top, r.y);
+            right = Math.max(right, r.x + r.width);
+            bottom = Math.max(bottom, r.y + r.height);
+            maxWidth = Math.max(maxWidth, r.width || 0);
+            maxHeight = Math.max(maxHeight, r.height || 0);
+        }
+
+        if (!Number.isFinite(left) || !Number.isFinite(top) || !Number.isFinite(right) || !Number.isFinite(bottom)) {
+            return { left: 0, top: 0, right: 1920, bottom: 1080, width: 1920, height: 1080, maxWidth: 1920, maxHeight: 1080 };
+        }
+        return {
+            left, top, right, bottom,
+            width: Math.max(1, right - left),
+            height: Math.max(1, bottom - top),
+            maxWidth: Math.max(1, maxWidth),
+            maxHeight: Math.max(1, maxHeight),
+        };
+    }
+
+    #getParkingStride() {
+        const b = this.#getGlobalMonitorBounds();
+        return Math.max(b.maxWidth, b.width) + 1000;
+    }
+
+    #getParkingRectForWindow(metaWindow, sideIndex, activeSide) {
+        if (!metaWindow) return null;
+        const side = Math.max(0, Math.floor(Number(sideIndex) || 0));
+        const active = Math.max(0, Math.floor(Number(activeSide) || 0));
+        if (side === active) return null;
+
+        const b = this.#getGlobalMonitorBounds();
+        const stride = this.#getParkingStride();
+        let fr = null;
+        try { fr = metaWindow.get_frame_rect(); } catch (e) {}
+        if (!fr) fr = { x: b.left, y: b.top, width: 900, height: 700 };
+
+        const delta = Math.abs(side - active);
+        const margin = 200;
+        const y = Math.max(b.top + 20, Math.min(fr.y, b.bottom - Math.max(50, fr.height) - 20));
+
+        if (side < active) {
+            const x = b.left - (delta * stride) - fr.width - margin;
+            return { x, y, width: fr.width, height: fr.height };
+        }
+        const x = b.right + (delta * stride) + margin;
+        return { x, y, width: fr.width, height: fr.height };
+    }
+
+    #restoreWindowFromParking(metaWindow) {
+        if (!metaWindow) return false;
+        const k = String(this.#windowKey(metaWindow));
+        if (this.#movingWindowKeys.has(k) || this.#resizingWindowKeys.has(k)) return false;
+        const r = this.#parkRestoreRectByKey[k] || null;
+        if (!r) return false;
+        try {
+            this.#suppressWindowGeomSignals(metaWindow, 450);
+            metaWindow.move_resize_frame(false, r.x, r.y, r.width, r.height);
+            delete this.#parkRestoreRectByKey[k];
+            return true;
+        } catch (e) {}
+        return false;
+    }
+
+    #parkWindowForSide(metaWindow, wsIndex, sideIndex, activeSide) {
+        if (!metaWindow) return false;
+        if (metaWindow.window_type !== Meta.WindowType.NORMAL) return false;
+        if (this.#isSticky(metaWindow)) return false;
+
+        const winWs = this.#getWorkspaceIndexOfWindow(metaWindow);
+        if (winWs === null || winWs !== wsIndex) return false;
+
+        const side = Math.max(0, Math.floor(Number(sideIndex) || 0));
+        const active = Math.max(0, Math.floor(Number(activeSide) || 0));
+        if (side === active) return this.#restoreWindowFromParking(metaWindow);
+
+        const pr = this.#getParkingRectForWindow(metaWindow, side, active);
+        if (!pr) return false;
+
+        const k = String(this.#windowKey(metaWindow));
+        if (this.#movingWindowKeys.has(k) || this.#resizingWindowKeys.has(k)) return false;
+        if (!this.#parkRestoreRectByKey[k]) {
+            try {
+                const fr = metaWindow.get_frame_rect();
+                this.#parkRestoreRectByKey[k] = { x: fr.x, y: fr.y, width: fr.width, height: fr.height };
+            } catch (e) {}
+        }
+
+        try {
+            this.#suppressWindowGeomSignals(metaWindow, 450);
+            metaWindow.move_resize_frame(false, pr.x, pr.y, pr.width, pr.height);
+            return true;
+        } catch (e) {}
+        return false;
+    }
+
+    #parkInactiveSideWindows(wsIndex) {
+        const activeSide = this.#getActiveSideIndex(wsIndex);
+        for (const w of listAllMetaWindows()) {
+            if (!w || w.window_type !== Meta.WindowType.NORMAL) continue;
+            if (this.#getWorkspaceIndexOfWindow(w) !== wsIndex) continue;
+            if (this.#isSticky(w)) continue;
+            const k = String(this.#windowKey(w));
+            const side = this.#getWindowSide(wsIndex, k);
+            this.#parkWindowForSide(w, wsIndex, side, activeSide);
+        }
+    }
+
+    #restoreActiveSideWindows(wsIndex) {
+        const activeSide = this.#getActiveSideIndex(wsIndex);
+        for (const w of listAllMetaWindows()) {
+            if (!w || w.window_type !== Meta.WindowType.NORMAL) continue;
+            if (this.#getWorkspaceIndexOfWindow(w) !== wsIndex) continue;
+            const k = String(this.#windowKey(w));
+            if (this.#getWindowSide(wsIndex, k) !== activeSide) continue;
+            this.#restoreWindowFromParking(w);
+        }
+    }
+
+    #switchActiveWorkspaceSide(delta) {
+        const wsIndex = this.#getActiveWorkspaceIndex();
+        const oldSide = this.#getActiveSideIndex(wsIndex);
+        const rawNext = oldSide + Math.floor(Number(delta) || 0);
+        const nextSide = Math.max(0, rawNext);
+        if (nextSide === oldSide) return;
+
+        this.#setActiveSideIndex(wsIndex, nextSide);
+        this.#restoreActiveSideWindows(wsIndex);
+        this.#parkInactiveSideWindows(wsIndex);
+
+        const wsKey = String(wsIndex);
+        if (this.#lastLayout[wsKey]) delete this.#lastLayout[wsKey];
+
+        if (this.#isTilingEnabled(wsIndex)) {
+            this.#scheduleRetileBurst(wsIndex, 'side-switch');
+        } else {
+            this.#syncTileBorders(wsIndex, 'side-switch-disabled', false);
+        }
+        this.#notify(`Workspace ${wsIndex + 1}: side ${nextSide + 1}`);
+    }
+
+    #moveFocusedWindowToSideDelta(delta) {
+        const w = this.#getFocusWindow();
+        if (!w || w.window_type !== Meta.WindowType.NORMAL) return;
+        if (this.#isSticky(w)) return;
+
+        const wsIndex = this.#getWorkspaceIndexOfWindow(w);
+        const monIndex = this.#getMonitorIndexOfWindow(w);
+        if (wsIndex === null || monIndex === null) return;
+
+        const k = String(this.#windowKey(w));
+        const fromSide = this.#getWindowSide(wsIndex, k);
+        const toSide = Math.max(0, fromSide + Math.floor(Number(delta) || 0));
+        if (toSide === fromSide) return;
+
+        const beforeTree = this.#getBspTree(wsIndex, monIndex, fromSide);
+        const rem = removeLeafByKey(beforeTree, k);
+        if (rem.changed) this.#setBspTree(wsIndex, monIndex, rem.tree, fromSide);
+
+        this.#setWindowSide(wsIndex, k, toSide);
+        const activeSide = this.#getActiveSideIndex(wsIndex);
+        if (toSide === activeSide) {
+            if (this.#isTilingEnabled(wsIndex)) {
+                Mainloop.idle_add(() => { this.#insertWindowIntoLayout(w, 'side-move-visible', true); return false; });
+            } else {
+                this.#restoreWindowFromParking(w);
+            }
+        } else {
+            this.#parkWindowForSide(w, wsIndex, toSide, activeSide);
+            if (this.#isTilingEnabled(wsIndex)) this.#retileAfterDrag(wsIndex, 'side-move-hidden');
+            this.#syncTileBorders(wsIndex, 'side-move-hidden', false);
+        }
+
+        this.#notify(`Window moved to side ${toSide + 1}`);
     }
 
     // Compute whether a given tree would violate minimum tile sizes.
@@ -759,9 +976,10 @@ class Application {
         if (!this.#isTilingEnabled(wsIndex)) return false;
 
         const k = this.#windowKey(metaWindow);
-        const beforeTree = this.#getBspTree(wsIndex, monIndex);
+        const sideIndex = this.#getWindowSide(wsIndex, k);
+        const beforeTree = this.#getBspTree(wsIndex, monIndex, sideIndex);
         const rem = removeLeafByKey(beforeTree, k);
-        if (rem.changed) this.#setBspTree(wsIndex, monIndex, rem.tree);
+        if (rem.changed) this.#setBspTree(wsIndex, monIndex, rem.tree, sideIndex);
         return rem.changed;
     }
 
@@ -779,6 +997,8 @@ class Application {
         if (!this.#isTilingEnabled(wsIndex)) return { wsIndex, monIndex, inserted: false };
 
         const myKey = String(this.#windowKey(metaWindow));
+        const activeSide = this.#getActiveSideIndex(wsIndex);
+        this.#setWindowSide(wsIndex, myKey, activeSide);
 
         const eg = this.#effectiveGapsForWorkspace(wsIndex);
         const outerGap = eg.outerGap;
@@ -787,7 +1007,7 @@ class Application {
         if (!workArea) return { wsIndex, monIndex, inserted: false };
 
         // Build "base" tiled list: exclude any floating windows (temp or user) and exclude myKey itself.
-        let wins = listTilingCandidates(wsIndex, monIndex) || [];
+        let wins = this.#listManagedTilingCandidates(wsIndex, monIndex) || [];
 
         // Ensure my window is not accidentally in the base list.
         wins = wins.filter(w => String(this.#windowKey(w)) !== myKey);
@@ -1158,6 +1378,9 @@ class Application {
         const inactiveW = Math.max(0, Math.floor(Number(sd.tileBorderInactiveWidth?.value ?? 1)));
         const activeC = String(sd.tileBorderActiveColor?.value || 'rgba(136,192,208,1)');
         const inactiveC = String(sd.tileBorderInactiveColor?.value || 'rgba(216,222,233,0.45)');
+        const specialEnabled = !!(sd.floatStickyBordersEnabled?.value);
+        const floatC = String(sd.floatBorderColor?.value || 'rgba(225,255,240,0.82)');
+        const stickyC = String(sd.stickyBorderColor?.value || 'rgba(120,30,120,0.82)');
         const radius = Math.max(0, Math.floor(Number(sd.tileBorderRadius?.value ?? 10)));
 
         const overlayAnimate = !!(sd.overlayAnimate?.value);
@@ -1167,6 +1390,7 @@ class Application {
             enabled,
             activeW, inactiveW,
             activeC, inactiveC,
+            specialEnabled, floatC, stickyC,
             radius,
             overlayAnimate,
             overlayDur,
@@ -1355,7 +1579,7 @@ class Application {
                     let anchor = null;
                     try { anchor = (typeof w.get_compositor_private === 'function') ? w.get_compositor_private() : null; } catch (e) {}
                     if (!anchor) continue;
-                    entries[key] = { rect: rbk[key], anchor };
+                    entries[key] = { rect: rbk[key], anchor, mode: 'tiled' };
                 }
             }
         }
@@ -1380,7 +1604,11 @@ class Application {
             try { anchor = (typeof w.get_compositor_private === 'function') ? w.get_compositor_private() : null; } catch (e) {}
             if (!anchor) continue;
 
-            entries[key] = { rect: { x: fr.x, y: fr.y, width: fr.width, height: fr.height }, anchor };
+            let mode = 'floating';
+            if (cfg.specialEnabled) {
+                mode = isSticky ? 'sticky' : 'floating';
+            }
+            entries[key] = { rect: { x: fr.x, y: fr.y, width: fr.width, height: fr.height }, anchor, mode };
         }
 
         const keys = Object.keys(entries);
@@ -1403,6 +1631,9 @@ class Application {
             inactiveWidth: cfg.inactiveW,
             activeColor: cfg.activeC,
             inactiveColor: cfg.inactiveC,
+            specialEnabled: cfg.specialEnabled,
+            floatColor: cfg.floatC,
+            stickyColor: cfg.stickyC,
             radius: cfg.radius,
             animate,
             durationMs: cfg.overlayDur,
@@ -1514,44 +1745,132 @@ class Application {
         }
     }
 
-    #getWsMonState(wsIndex, monIndex, create = false) {
+    #getWorkspaceState(wsIndex, create = false) {
         const wsKey = String(wsIndex);
-        const monKey = String(monIndex);
-        let ws = this.#tilingState.workspaces[wsKey];
+        let ws = this.#tilingState.workspaces?.[wsKey] || null;
         if (!ws && create) {
-            ws = { monitors: Object.create(null), gapsDisabled: false };
+            ws = {
+                activeSide: 0,
+                windowSides: Object.create(null),
+                sides: Object.create(null),
+                gapsDisabled: false
+            };
+            ws.sides['0'] = { monitors: Object.create(null) };
             this.#tilingState.workspaces[wsKey] = ws;
         }
         if (!ws) return null;
-        if (!ws.monitors || typeof ws.monitors !== 'object') ws.monitors = Object.create(null);
+
         if (ws.gapsDisabled === undefined) ws.gapsDisabled = false;
-        let mon = ws.monitors[monKey];
+        if (!ws.windowSides || typeof ws.windowSides !== 'object') ws.windowSides = Object.create(null);
+        if (!ws.sides || typeof ws.sides !== 'object') ws.sides = Object.create(null);
+
+        const active = Number(ws.activeSide);
+        ws.activeSide = (Number.isFinite(active) && active >= 0) ? Math.floor(active) : 0;
+        if (!ws.sides[String(ws.activeSide)] || typeof ws.sides[String(ws.activeSide)] !== 'object')
+            ws.sides[String(ws.activeSide)] = { monitors: Object.create(null) };
+
+        // v1 compatibility (runtime migration)
+        if (ws.monitors && typeof ws.monitors === 'object') {
+            if (!ws.sides['0'] || typeof ws.sides['0'] !== 'object') ws.sides['0'] = { monitors: Object.create(null) };
+            if (!ws.sides['0'].monitors || typeof ws.sides['0'].monitors !== 'object') ws.sides['0'].monitors = ws.monitors;
+        }
+
+        return ws;
+    }
+
+    #getActiveSideIndex(wsIndex) {
+        const ws = this.#getWorkspaceState(wsIndex, true);
+        return ws ? ws.activeSide : 0;
+    }
+
+    #setActiveSideIndex(wsIndex, sideIndex) {
+        const ws = this.#getWorkspaceState(wsIndex, true);
+        if (!ws) return 0;
+        const next = Math.max(0, Math.floor(Number(sideIndex) || 0));
+        ws.activeSide = next;
+        if (!ws.sides[String(next)] || typeof ws.sides[String(next)] !== 'object')
+            ws.sides[String(next)] = { monitors: Object.create(null) };
+        this.#scheduleSaveTilingState('active-side-changed');
+        return next;
+    }
+
+    #getWindowSide(wsIndex, winKey) {
+        const ws = this.#getWorkspaceState(wsIndex, true);
+        if (!ws) return 0;
+        const k = String(winKey || '');
+        if (!k) return ws.activeSide;
+        const raw = ws.windowSides[k];
+        const n = Number(raw);
+        return (Number.isFinite(n) && n >= 0) ? Math.floor(n) : 0;
+    }
+
+    #setWindowSide(wsIndex, winKey, sideIndex) {
+        const ws = this.#getWorkspaceState(wsIndex, true);
+        if (!ws) return;
+        const k = String(winKey || '');
+        if (!k) return;
+        ws.windowSides[k] = Math.max(0, Math.floor(Number(sideIndex) || 0));
+        this.#scheduleSaveTilingState('window-side-changed');
+    }
+
+    #deleteWindowSide(wsIndex, winKey) {
+        const ws = this.#getWorkspaceState(wsIndex, false);
+        if (!ws) return;
+        const k = String(winKey || '');
+        if (!k) return;
+        if (ws.windowSides && ws.windowSides[k] !== undefined) {
+            delete ws.windowSides[k];
+            this.#scheduleSaveTilingState('window-side-deleted');
+        }
+    }
+
+    #ensureSideState(wsIndex, sideIndex) {
+        const ws = this.#getWorkspaceState(wsIndex, true);
+        if (!ws) return null;
+        const sideKey = String(Math.max(0, Math.floor(Number(sideIndex) || 0)));
+        let side = ws.sides[sideKey];
+        if (!side || typeof side !== 'object') {
+            side = { monitors: Object.create(null) };
+            ws.sides[sideKey] = side;
+        }
+        if (!side.monitors || typeof side.monitors !== 'object') side.monitors = Object.create(null);
+        return side;
+    }
+
+    #getSideMonState(wsIndex, sideIndex, monIndex, create = false) {
+        const monKey = String(monIndex);
+        const side = create
+            ? this.#ensureSideState(wsIndex, sideIndex)
+            : this.#getWorkspaceState(wsIndex, false)?.sides?.[String(Math.max(0, Math.floor(Number(sideIndex) || 0)))] || null;
+        if (!side) return null;
+        if (!side.monitors || typeof side.monitors !== 'object') {
+            if (!create) return null;
+            side.monitors = Object.create(null);
+        }
+        let mon = side.monitors[monKey];
         if (!mon && create) {
             mon = { tree: null };
-            ws.monitors[monKey] = mon;
+            side.monitors[monKey] = mon;
         }
         return mon || null;
+    }
+
+    #getWsMonState(wsIndex, monIndex, create = false) {
+        return this.#getSideMonState(wsIndex, this.#getActiveSideIndex(wsIndex), monIndex, create);
     }
  
     // ----- v0.66 gaps toggle (per workspace) -----
 
     #isGapsDisabled(wsIndex) {
-        const wsKey = String(wsIndex);
-        const ws = this.#tilingState.workspaces?.[wsKey] || null;
+        const ws = this.#getWorkspaceState(wsIndex, false);
         if (!ws || typeof ws !== 'object') return false;
         return !!ws.gapsDisabled;
     }
 
     #setGapsDisabled(wsIndex, disabled) {
-        const wsKey = String(wsIndex);
-        let ws = this.#tilingState.workspaces?.[wsKey] || null;
-        if (!ws || typeof ws !== 'object') {
-            ws = { monitors: Object.create(null), gapsDisabled: !!disabled };
-            this.#tilingState.workspaces[wsKey] = ws;
-        } else {
-            ws.gapsDisabled = !!disabled;
-            if (!ws.monitors || typeof ws.monitors !== 'object') ws.monitors = Object.create(null);
-        }
+        const ws = this.#getWorkspaceState(wsIndex, true);
+        if (!ws) return;
+        ws.gapsDisabled = !!disabled;
         this.#scheduleSaveTilingState('gaps-toggle');
     }
 
@@ -1900,27 +2219,41 @@ class Application {
         Mainloop.idle_add(() => { try { this.#activateWindow(ctx.w); } catch (e) {} return false; });
     }
 
-    #getBspTree(wsIndex, monIndex) {
-        const st = this.#getWsMonState(wsIndex, monIndex, false);
+    #getBspTree(wsIndex, monIndex, sideIndex = null) {
+        const side = (sideIndex === null || sideIndex === undefined)
+            ? this.#getActiveSideIndex(wsIndex)
+            : Math.max(0, Math.floor(Number(sideIndex) || 0));
+        const st = this.#getSideMonState(wsIndex, side, monIndex, false);
         return st ? (st.tree || null) : null;
     }
 
-    #setBspTree(wsIndex, monIndex, tree) {
-        const st = this.#getWsMonState(wsIndex, monIndex, true);
+    #setBspTree(wsIndex, monIndex, tree, sideIndex = null) {
+        const side = (sideIndex === null || sideIndex === undefined)
+            ? this.#getActiveSideIndex(wsIndex)
+            : Math.max(0, Math.floor(Number(sideIndex) || 0));
+        const st = this.#getSideMonState(wsIndex, side, monIndex, true);
         st.tree = tree || null;
         this.#scheduleSaveTilingState('tree-changed');
     }
 
-    #clearWorkspaceTrees(wsIndex) {
-        const wsKey = String(wsIndex);
-        const ws = this.#tilingState.workspaces?.[wsKey] || null;
-        if (ws && typeof ws === 'object') {
-            // Preserve workspace flags (e.g. gapsDisabled), clear only monitor trees.
-            ws.monitors = Object.create(null);
-            this.#scheduleSaveTilingState('workspace-reset');
+    #clearSideTrees(wsIndex, sideIndex) {
+        const side = this.#ensureSideState(wsIndex, sideIndex);
+        if (!side) return;
+        side.monitors = Object.create(null);
+        this.#scheduleSaveTilingState('workspace-side-reset');
+    }
+
+    #clearWorkspaceTrees(wsIndex, activeSideOnly = false) {
+        const ws = this.#getWorkspaceState(wsIndex, false);
+        if (!ws) return;
+        if (activeSideOnly) {
+            this.#clearSideTrees(wsIndex, this.#getActiveSideIndex(wsIndex));
         } else {
-            // no-op for missing ws
+            ws.sides = Object.create(null);
+            ws.sides[String(this.#getActiveSideIndex(wsIndex))] = { monitors: Object.create(null) };
+            this.#scheduleSaveTilingState('workspace-reset');
         }
+        const wsKey = String(wsIndex);
         if (this.#lastLayout[wsKey]) delete this.#lastLayout[wsKey];
     }
 
@@ -2087,8 +2420,11 @@ class Application {
         // When a window goes away, reflow the workspace it was on.
         this.#safeConnect(metaWindow, 'unmanaged', () => {
             const aws = this.#getActiveWorkspaceIndex();
+            const winKey = String(this.#windowKey(metaWindow));
             try { this.#setWindowFlags(this.#windowKey(metaWindow), false, false); } catch (e) {}
+            if (lastWs !== null) this.#deleteWindowSide(lastWs, winKey);
             if (lastWs !== null) this.#scheduleRetile(lastWs, 'window-unmanaged');
+            delete this.#parkRestoreRectByKey[winKey];
             // v0.682: ensure overlays drop immediately for closed windows.
             this.#scheduleBorderRefreshActive('unmanaged', 0);
             // If the unmanaged window was on the active workspace, refresh overlays quickly.
@@ -2098,13 +2434,20 @@ class Application {
         // When moved to/from workspace, reflow both sides.
         // (Most builds expose notify::workspace; if not, this is harmlessly skipped.)
         this.#safeConnect(metaWindow, 'notify::workspace', () => {
+            const winKey = String(this.#windowKey(metaWindow));
             if (this.#isUserFloating(metaWindow)) {
-                lastWs = this.#getWorkspaceIndexOfWindow(metaWindow);
+                const newWsFloat = this.#getWorkspaceIndexOfWindow(metaWindow);
+                if (lastWs !== null) this.#deleteWindowSide(lastWs, winKey);
+                if (newWsFloat !== null) this.#setWindowSide(newWsFloat, winKey, this.#getActiveSideIndex(newWsFloat));
+                lastWs = newWsFloat;
                 this.#scheduleBorderRefreshActive('floating-ws-change', 30);
                 return;
             }
             const newWs = this.#getWorkspaceIndexOfWindow(metaWindow);
             if (newWs === lastWs) return;
+
+            if (lastWs !== null) this.#deleteWindowSide(lastWs, winKey);
+            if (newWs !== null) this.#setWindowSide(newWs, winKey, this.#getActiveSideIndex(newWs));
 
             if (lastWs !== null && this.#isTilingEnabled(lastWs)) this.#scheduleRetileBurst(lastWs, 'window-left-workspace');
             if (newWs !== null && this.#isTilingEnabled(newWs)) this.#scheduleRetileBurst(newWs, 'window-entered-workspace');
@@ -2177,6 +2520,10 @@ class Application {
         this.#safeConnect(global.display, 'window-created', (display, metaWindow) => {
             this.#trackWindow(metaWindow);
             const ws = this.#getWorkspaceIndexOfWindow(metaWindow);
+            if (ws !== null) {
+                const k = String(this.#windowKey(metaWindow));
+                this.#setWindowSide(ws, k, this.#getActiveSideIndex(ws));
+            }
             if (ws !== null && this.#isTilingEnabled(ws)) {
                 if (this.#isForcedFloat(metaWindow)) return; // v068
 
@@ -2342,6 +2689,9 @@ class Application {
 
     #retileWorkspaceNow(wsIndex, debug = false) {
         if (!this.#isTilingEnabled(wsIndex)) return;
+
+        this.#restoreActiveSideWindows(wsIndex);
+        this.#parkInactiveSideWindows(wsIndex);
 
         const nMonitors = global.display.get_n_monitors();
         const eg = this.#effectiveGapsForWorkspace(wsIndex);
@@ -2931,6 +3281,8 @@ class Application {
         if (!workArea) return;
 
         const myKey = String(ctx.winKey || this.#windowKey(metaWindow));
+        const activeSide = this.#getActiveSideIndex(endWs);
+        this.#setWindowSide(endWs, myKey, activeSide);
 
         // Reconcile destination tree against current tiled windows (excluding floating keys incl. myKey).
         let wins = this.#listManagedTilingCandidates(endWs, endMon);
@@ -2940,10 +3292,10 @@ class Application {
         wins.sort((a, b) => this.#windowSortKey(a) - this.#windowSortKey(b));
         const winKeys = wins.map(w => this.#windowKey(w));
 
-        let nextTree = this.#getBspTree(endWs, endMon);
+        let nextTree = this.#getBspTree(endWs, endMon, activeSide);
         const rec = reconcileBspTree(nextTree, winKeys, workArea);
         nextTree = rec.tree;
-        if (rec.changed) this.#setBspTree(endWs, endMon, nextTree);
+        if (rec.changed) this.#setBspTree(endWs, endMon, nextTree, activeSide);
 
         // Build hit rects from the reconciled tree (gapped rects = what user sees).
         let hitRects = Object.create(null);
@@ -2990,7 +3342,7 @@ class Application {
         }
 
         // Commit tree, then re-enable tiling membership for this window.
-        this.#setBspTree(endWs, endMon, insertedTree);
+        this.#setBspTree(endWs, endMon, insertedTree, activeSide);
         try { this.#floatingWindowKeys.delete(myKey); } catch (e) {}
         try { this.#movingWindowKeys.delete(myKey); } catch (e) {}
 
@@ -3026,21 +3378,23 @@ class Application {
                 // v0.5: on tiling-enabled workspaces, MOVING becomes “detach + insert on drop”
                 if (wsIndex !== null && this.#isTilingEnabled(wsIndex)) {
                     const monIndex = this.#getMonitorIndexOfWindow(window);
+                    const sideIndex = this.#getWindowSide(wsIndex, winKey);
 
                     this.#movingWindowKeys.add(winKey);
                     this.#floatingWindowKeys.add(winKey);
 
                     // Persist removal immediately (old slot is gone).
                     if (monIndex !== null) {
-                        const beforeTree = this.#getBspTree(wsIndex, monIndex);
+                        const beforeTree = this.#getBspTree(wsIndex, monIndex, sideIndex);
                         const rem = removeLeafByKey(beforeTree, winKey);
-                        if (rem.changed) this.#setBspTree(wsIndex, monIndex, rem.tree);
+                        if (rem.changed) this.#setBspTree(wsIndex, monIndex, rem.tree, sideIndex);
                     }
 
                     this.#dragCtx = {
                         winKey,
                         wsIndex,
-                        monIndex
+                        monIndex,
+                        sideIndex
                     };
 
                     // Close the gap immediately (retile without the dragged window).

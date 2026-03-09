@@ -31,6 +31,30 @@
     "default": "<Super>g",
     "description": "Toggle hyprmon gaps on/off on the current workspace (tiling-enabled only)"
   },
+  "_header_sideviews": {
+    "type": "header",
+    "description": "Sideviews (v2)"
+  },
+  "sideviewPrevHotkey": {
+    "type": "keybinding",
+    "default": "<Super>Page_Up",
+    "description": "Switch to previous sideview on the current workspace"
+  },
+  "sideviewNextHotkey": {
+    "type": "keybinding",
+    "default": "<Super>Page_Down",
+    "description": "Switch to next sideview on the current workspace"
+  },
+  "moveWindowToPrevSideHotkey": {
+    "type": "keybinding",
+    "default": "<Super><Shift>Page_Up",
+    "description": "Move focused window to previous sideview"
+  },
+  "moveWindowToNextSideHotkey": {
+    "type": "keybinding",
+    "default": "<Super><Shift>Page_Down",
+    "description": "Move focused window to next sideview"
+  },
 
   "_header_window_modes": {
     "type": "header",
@@ -140,6 +164,26 @@
     "tooltip": "Border color for non-focused tiles.",
     "default": "rgba(120,120,120,0.45)",
     "dependency": "tileBordersEnabled"
+  },
+  "floatStickyBordersEnabled": {
+    "type": "checkbox",
+    "default": true,
+    "description": "Draw special borders for floating and sticky windows",
+    "dependency": "tileBordersEnabled"
+  },
+  "floatBorderColor": {
+    "type": "colorchooser",
+    "description": "Floating window border color",
+    "tooltip": "Border color for hyprmon-managed floating windows.",
+    "default": "rgba(225,255,240,0.82)",
+    "dependency": "floatStickyBordersEnabled"
+  },
+  "stickyBorderColor": {
+    "type": "colorchooser",
+    "description": "Sticky window border color",
+    "tooltip": "Border color for hyprmon-managed sticky windows.",
+    "default": "rgba(120,30,120,0.82)",
+    "dependency": "floatStickyBordersEnabled"
   },
   "tileBorderRadius": {
     "type": "spinbutton",

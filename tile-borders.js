@@ -48,14 +48,81 @@ class TileBorders {
         this.#byKey = Object.create(null);
     }
 
+    #clamp01(v) { const x = Number(v); return Number.isFinite(x) ? Math.max(0, Math.min(1, x)) : 1; }
+    #clamp255(v) { const x = Number(v); return Number.isFinite(x) ? Math.max(0, Math.min(255, x)) : 0; }
+
+    #parseColor(s) {
+        const str = String(s || '').trim();
+        if (!str) return null;
+
+        // rgba()/rgb()
+        let m = str.match(/^rgba?\(\s*([0-9.]+)\s*,\s*([0-9.]+)\s*,\s*([0-9.]+)(?:\s*,\s*([0-9.]+))?\s*\)$/i);
+        if (m) {
+            return {
+                r: this.#clamp255(m[1]),
+                g: this.#clamp255(m[2]),
+                b: this.#clamp255(m[3]),
+                a: this.#clamp01(m[4] !== undefined ? m[4] : 1),
+            };
+        }
+
+        // #RRGGBB / #RRGGBBAA
+        if (str.startsWith('#')) {
+            const hex = str.slice(1);
+            if (hex.length === 6 || hex.length === 8) {
+                const r = parseInt(hex.slice(0, 2), 16);
+                const g = parseInt(hex.slice(2, 4), 16);
+                const b = parseInt(hex.slice(4, 6), 16);
+                const a = (hex.length === 8) ? (parseInt(hex.slice(6, 8), 16) / 255) : 1;
+                if ([r, g, b].every(n => Number.isFinite(n))) return { r, g, b, a: this.#clamp01(a) };
+            }
+        }
+
+        return null;
+    }
+
+    #rgbaStr(c) {
+        if (!c) return 'rgba(255,255,255,1)';
+        return `rgba(${Math.round(this.#clamp255(c.r))},${Math.round(this.#clamp255(c.g))},${Math.round(this.#clamp255(c.b))},${this.#clamp01(c.a)})`;
+    }
+
+    #blend(a, b, t) {
+        const tt = this.#clamp01(t);
+        if (!a) return b;
+        if (!b) return a;
+        return {
+            r: a.r * (1 - tt) + b.r * tt,
+            g: a.g * (1 - tt) + b.g * tt,
+            b: a.b * (1 - tt) + b.b * tt,
+            a: a.a * (1 - tt) + b.a * tt,
+        };
+    }
+
     destroy() {
         try { this.clear(); } catch (e) {}
         this.#shown = false;
     }
 
-    #styleFor(isActive, cfg) {
+    #styleFor(mode, isActive, cfg) {
         const w = Math.max(0, Math.floor(Number(isActive ? cfg.activeWidth : cfg.inactiveWidth) || 0));
-        const c = String(isActive ? cfg.activeColor : cfg.inactiveColor);
+        const baseActive = this.#parseColor(cfg.activeColor);
+        const baseInactive = this.#parseColor(cfg.inactiveColor);
+        const floatC = this.#parseColor(cfg.floatColor);
+        const stickyC = this.#parseColor(cfg.stickyColor);
+
+        let col = isActive ? baseActive : baseInactive;
+
+        if (cfg.specialEnabled && (mode === 'floating' || mode === 'sticky')) {
+            const special = (mode === 'sticky') ? stickyC : floatC;
+            if (isActive) {
+                // Blend: keep user's active slightly dominant.
+                col = this.#blend(baseActive, special, 0.45);
+            } else {
+                col = special || col;
+            }
+        }
+
+        const c = this.#rgbaStr(col);
         const r = Math.max(0, Math.floor(Number(cfg.radius) || 0));
         // Transparent fill; border only.
         return `background-color: rgba(0,0,0,0); border: ${w}px solid ${c}; border-radius: ${r}px;`;
@@ -153,6 +220,7 @@ class TileBorders {
             const anchor = (entry && entry.anchor) ? entry.anchor : null;
             if (!rect) continue;
 
+            const mode = (entry && entry.mode) ? String(entry.mode) : 'tiled';
             let rec = this.#byKey[k];
             if (!rec) {
                 const actor = new St.Widget({
@@ -166,7 +234,7 @@ class TileBorders {
             }
 
             const isActive = (focusedKey !== null && String(k) === String(focusedKey));
-            const style = this.#styleFor(isActive, cfg);
+            const style = this.#styleFor(mode, isActive, cfg);
 
             try {
                 if (rec._style !== style) {

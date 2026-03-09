@@ -1,7 +1,77 @@
 # CHANGELOG
 Changelog for hyprmon -project.
 
- 
+## v0.684 Sideviews
+• Implemented Option A sideviews across the codebase.
+
+###  What changed
+
+####  1. State format + migration to version: 2 in tiling-state-io.js:
+
+  - Added workspace shape support for activeSide, windowSides, and sides.
+  - Migrates old workspaces[ws].monitors into workspaces[ws].sides["0"].monitors.
+  - Preserves gapsDisabled and normalizes missing side structures.
+  - Save fallback now writes version: 2.
+
+####  2. Side-aware core behavior in application.js:
+
+  - Added side state helpers:
+      - #getWorkspaceState, #getActiveSideIndex, #setActiveSideIndex
+      - #getWindowSide, #setWindowSide, #deleteWindowSide
+      - #ensureSideState, #getSideMonState
+      - Side-aware #getBspTree/#setBspTree, plus #clearSideTrees/#clearWorkspaceTrees.
+  - #listManagedTilingCandidates now filters to active side only.
+  - New windows inherit current workspace active side.
+  - Workspace moves/unmanaged cleanup now updates per-workspace windowSides.
+  - Retile path now restores active-side parked windows and parks inactive-side windows.
+
+####  3. Off-screen parking (Option A) in application.js:
+
+  - Added:
+      - #getGlobalMonitorBounds, #getParkingStride, #getParkingRectForWindow
+      - #parkWindowForSide, #parkInactiveSideWindows
+      - #restoreWindowFromParking, #restoreActiveSideWindows
+  - Uses large stride based on global monitor bounds to avoid landing on real monitors.
+
+####  4. Side switching + move focused window between sides in application.js:
+
+  - Added:
+      - #switchActiveWorkspaceSide(delta)
+      - #moveFocusedWindowToSideDelta(delta)
+  - Side switch updates activeSide, parks/restores, retiles, refreshes borders, and notifies.
+  - Move-to-side removes from source side tree, reassigns side, then inserts/parks depending on target side activity.
+
+####  5. Hotkeys for sideviews in settings-schema.json and application.js:
+
+  - Added schema keys:
+      - sideviewPrevHotkey (<Super>Page_Up)
+      - sideviewNextHotkey (<Super>Page_Down)
+      - moveWindowToPrevSideHotkey (<Super><Shift>Page_Up)
+      - moveWindowToNextSideHotkey (<Super><Shift>Page_Down)
+  - Bound/unbound in hotkey registration logic.
+
+## v0.683 Special colored overlays for sticky/floating & bugfixing
+
+### 1) Fix: top-monitor windows shifted down vs overlays (stacked monitors)
+Bug pattern strongly matches a coordinate-space mismatch between:
+- the “work area / monitor geometry” you use to compute target rects, and
+- what Muffin actually uses when applying move_resize_frame() in a vertical (“top/bottom”) layout.
+The most robust fix is:
+- 1. Stop deriving work-area from panels manually when possible; use Muffin’s own work-area APIs if available.
+- 2. Add a lightweight coordinate normalization for setups where monitor geometries include negative x/y, but window frame coords are in a rebased space.
+- 3. Make snapToRect() more deterministic (round coords + use user_op=true; optional one-shot correction for “big delta” cases).
+
+### 2) Feature: special border colors for floating + sticky (with blended active)
+Behavior
+- Tiled windows: same as now (active/inactive colors from settings).
+- Floating windows (hyprmon-managed): default “whitish green”.
+- Sticky windows: default “dark magenta-ish”.
+- Focused floating/sticky: blended between user active color and the special color.
+
+### Notes / expected result
+- The stacked-monitor “top windows shifted down into bottom monitor” should resolve primarily via the work-area API + coord normalization + snapToRect hardening.
+- The float/sticky colored borders will appear only for hyprmon-managed floating/sticky (your #userFloatingKeys / #stickyKeys), and the focused one will use a blended color.
+
 ## v0.682 — Overlay stacking + floating overlays + recovery retile
 Fixes / mitigations (best-effort on X11/Muffin):
 - Overlays/borders now respect window stacking:
