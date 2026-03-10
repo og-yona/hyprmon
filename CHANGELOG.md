@@ -1,6 +1,37 @@
 # CHANGELOG
 Changelog for hyprmon -project.
 
+## v0.687 Hyprmon now has a file-based external hooks/IPC path suitable for Polybar/script integration, with minimal application.js wiring and most logic in a new module.
+
+### What changed
+
+  - Added new hooks module: external-hooks.js:1
+  - Wired orchestrator integration in application.js:196:
+      - status snapshot export (hyprmon.external.status.v1)
+      - external command dispatch for toggles/actions
+      - dirty-mark updates on workspace/side/feature state changes
+      - workspace index normalization now clamps to valid workspace range
+  - Added optional HUD status hotkey support:
+      - binding in hotkeys.js:10
+      - new schema key showWorkspaceStatusHotkey in settings-schema.json:32
+  - Added helper script for Polybar/custom scripts (atomic command writes + status output):
+      - hyprmon-hookctl.sh:1
+  - Documented full external hooks contract and examples in README.md:125
+
+###  Hook paths
+
+  - ~/.config/hyprmon@og-yona/hooks/status.json
+  - ~/.config/hyprmon@og-yona/hooks/command.json
+
+###  Supported actions
+
+  - toggle-tiling, toggle-gaps, toggle-opacity
+  - retile (force-retile / reset-layout)
+  - defloat-all
+  - switch-side-next, switch-side-prev
+  - show-status
+  - notify (with message)
+
 ## v0.6862 Rewrite README & reorganize settings.
 ### Updated Files
 

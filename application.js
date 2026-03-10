@@ -19,6 +19,7 @@ const { Sideviews } = require('./sideviews');
 const { SideState } = require('./side-state');
 const { connectWindowGrabs } = require('./window-grabs');
 const { WindowOpacity } = require('./window-opacity');
+const { ExternalHooks } = require('./external-hooks');
 
 // The application class is only constructed once and is the main entry
 // of the extension.
@@ -112,6 +113,7 @@ class Application {
     #sideviews = null;
     #sideState = null;
     #windowOpacity = null;
+    #externalHooks = null;
  
     // v0.63: remember last focused tile per workspace (and monitor) for "split active window"
     // wsIndex -> { key, monIndex, ts }
@@ -144,7 +146,9 @@ class Application {
                          'sideviewPrevHotkey','sideviewNextHotkey',
                          'moveWindowToPrevSideHotkey','moveWindowToNextSideHotkey',
                          // v2 auto-opacity
-                         'opacityToggleHotkey']) {
+                         'opacityToggleHotkey',
+                         // v2 external hooks / HUD status
+                         'showWorkspaceStatusHotkey']) {
             this.#settings.bindProperty(Settings.BindingDirection.IN, k, k, this.#enableTilingHotkeys);
         }
 
@@ -196,6 +200,7 @@ class Application {
             {
                 toggleGapsOnActiveWorkspace: this.#toggleGapsOnActiveWorkspace.bind(this),
                 toggleOpacityOnActiveWorkspace: this.#toggleOpacityOnActiveWorkspace.bind(this),
+                showActiveWorkspaceStatusHud: this.#showActiveWorkspaceStatusOnHud.bind(this),
 
                 focusNeighborLeft: () => this.#focusNeighborDir('W'),
                 focusNeighborRight: () => this.#focusNeighborDir('E'),
@@ -275,9 +280,22 @@ class Application {
             getWorkspaceIndexOfWindow: (w) => this.#getWorkspaceIndexOfWindow(w),
             isWorkspaceOpacityEnabled: (wsIndex) => this.#isWorkspaceOpacityEnabled(wsIndex),
         });
+        this.#externalHooks = new ExternalHooks(uuid, {
+            getActiveWorkspaceIndex: () => this.#getActiveWorkspaceIndex(),
+            getStatusSnapshot: () => this.#buildExternalStatusSnapshot(),
+            toggleTilingForWorkspace: (wsIndex) => this.#toggleTilingForWorkspace(wsIndex, true),
+            toggleGapsForWorkspace: (wsIndex) => this.#toggleGapsForWorkspace(wsIndex, true),
+            toggleOpacityForWorkspace: (wsIndex) => this.#toggleOpacityForWorkspace(wsIndex, true),
+            retileWorkspace: (wsIndex) => this.#retileWorkspaceByIndex(wsIndex, true),
+            defloatAllWindows: () => this.#defloatAllWindows(),
+            switchSideDelta: (delta) => this.#switchActiveWorkspaceSide(delta),
+            showActiveStatusHud: () => this.#showActiveWorkspaceStatusOnHud(),
+            notify: (message) => this.#notify(message),
+        });
 
         const onOpacitySettingsChanged = () => {
             try { if (this.#windowOpacity) this.#windowOpacity.onSettingsChanged(); } catch (e) {}
+            this.#markExternalStatusDirty('opacity-settings');
         };
         for (const k of [
             'autoOpacityEnabled',
@@ -355,6 +373,8 @@ class Application {
         this.#sideState = null;
         try { if (this.#windowOpacity) this.#windowOpacity.destroy(); } catch (e) {}
         this.#windowOpacity = null;
+        try { if (this.#externalHooks) this.#externalHooks.destroy(); } catch (e) {}
+        this.#externalHooks = null;
  
         // v0.682: cleanup border timers
         if (this.#borderRefreshTimer) {
@@ -431,6 +451,94 @@ class Application {
     #notify(message) {
         if (this.#hudNotifier) this.#hudNotifier.notify(message);
         else global.log(`hyprmon: ${String(message || '')}`);
+    }
+
+    #markExternalStatusDirty(reason = '') {
+        try { if (this.#externalHooks) this.#externalHooks.requestStatusRefresh(reason || ''); } catch (e) {}
+    }
+
+    #normalizeWorkspaceIndex(wsIndex) {
+        const n = Number(wsIndex);
+        let idx = Number.isFinite(n) && n >= 0 ? Math.floor(n) : this.#getActiveWorkspaceIndex();
+
+        let count = 0;
+        try {
+            const wm = global.workspace_manager;
+            if (wm && typeof wm.get_n_workspaces === 'function') count = Number(wm.get_n_workspaces() || 0);
+            else if (wm && Number.isFinite(Number(wm.n_workspaces))) count = Number(wm.n_workspaces);
+        } catch (e) {}
+
+        if (count > 0) idx = Math.max(0, Math.min(count - 1, idx));
+        else if (idx < 0) idx = 0;
+
+        return idx;
+    }
+
+    #workspaceStatusSummary(wsIndex) {
+        const ws = this.#normalizeWorkspaceIndex(wsIndex);
+        const wsState = this.#getWorkspaceState(ws, false);
+        const activeSide = (wsState && Number.isFinite(Number(wsState.activeSide)))
+            ? (Math.floor(Number(wsState.activeSide)) + 1)
+            : 1;
+        return {
+            workspace: ws + 1,
+            tilingEnabled: !!this.#isTilingEnabled(ws),
+            gapsEnabled: !this.#isGapsDisabled(ws),
+            opacityEnabled: !this.#isOpacityDisabled(ws),
+            activeSide,
+            knownSides: (() => {
+                const keys = Object.keys(wsState?.sides || Object.create(null))
+                    .map(k => parseInt(k, 10))
+                    .filter(n => Number.isFinite(n) && n >= 0)
+                    .sort((a, b) => a - b)
+                    .map(n => n + 1);
+                return keys.length ? keys : [1];
+            })(),
+        };
+    }
+
+    #buildExternalStatusSnapshot() {
+        let workspaceCount = 0;
+        try {
+            const wm = global.workspace_manager;
+            if (wm && typeof wm.get_n_workspaces === 'function') workspaceCount = wm.get_n_workspaces();
+            else if (wm && Number.isFinite(Number(wm.n_workspaces))) workspaceCount = Number(wm.n_workspaces);
+        } catch (e) {}
+        workspaceCount = Math.max(1, Math.floor(Number(workspaceCount) || 1));
+
+        const known = new Set();
+        for (let i = 0; i < workspaceCount; i++) known.add(i);
+        for (const k in (this.#enabledWorkspaces || Object.create(null))) {
+            const n = parseInt(k, 10);
+            if (Number.isFinite(n) && n >= 0) known.add(n);
+        }
+        for (const k in (this.#tilingState?.workspaces || Object.create(null))) {
+            const n = parseInt(k, 10);
+            if (Number.isFinite(n) && n >= 0) known.add(n);
+        }
+
+        const byWs = Object.create(null);
+        const sorted = Array.from(known).sort((a, b) => a - b);
+        for (const ws of sorted) byWs[String(ws + 1)] = this.#workspaceStatusSummary(ws);
+
+        const aws = this.#getActiveWorkspaceIndex();
+        return {
+            schema: 'hyprmon.external.status.v1',
+            ts: Date.now(),
+            activeWorkspace: aws + 1,
+            active: this.#workspaceStatusSummary(aws),
+            workspaces: byWs,
+        };
+    }
+
+    #showActiveWorkspaceStatusOnHud() {
+        const s = this.#workspaceStatusSummary(this.#getActiveWorkspaceIndex());
+        const msg =
+            `WS ${s.workspace} | side ${s.activeSide} | ` +
+            `tiling ${s.tilingEnabled ? 'ON' : 'OFF'} | ` +
+            `gaps ${s.gapsEnabled ? 'ON' : 'OFF'} | ` +
+            `opacity ${s.opacityEnabled ? 'ON' : 'OFF'}`;
+        this.#notify(msg);
     }
 
     #getActiveWorkspaceIndex() {
@@ -1533,7 +1641,9 @@ class Application {
     }
 
     #setActiveSideIndex(wsIndex, sideIndex) {
-        return this.#sideState ? this.#sideState.setActiveSideIndex(wsIndex, sideIndex) : 0;
+        const next = this.#sideState ? this.#sideState.setActiveSideIndex(wsIndex, sideIndex) : 0;
+        this.#markExternalStatusDirty('active-side-changed');
+        return next;
     }
 
     #getWindowSide(wsIndex, winKey) {
@@ -1542,10 +1652,12 @@ class Application {
 
     #setWindowSide(wsIndex, winKey, sideIndex) {
         if (this.#sideState) this.#sideState.setWindowSide(wsIndex, winKey, sideIndex);
+        this.#markExternalStatusDirty('window-side-changed');
     }
 
     #deleteWindowSide(wsIndex, winKey) {
         if (this.#sideState) this.#sideState.deleteWindowSide(wsIndex, winKey);
+        this.#markExternalStatusDirty('window-side-deleted');
     }
 
     #ensureSideState(wsIndex, sideIndex) {
@@ -1568,6 +1680,7 @@ class Application {
 
     #setGapsDisabled(wsIndex, disabled) {
         if (this.#sideState) this.#sideState.setGapsDisabled(wsIndex, disabled);
+        this.#markExternalStatusDirty('gaps-toggle');
     }
 
     #isOpacityDisabled(wsIndex) {
@@ -1576,6 +1689,7 @@ class Application {
 
     #setOpacityDisabled(wsIndex, disabled) {
         if (this.#sideState) this.#sideState.setOpacityDisabled(wsIndex, disabled);
+        this.#markExternalStatusDirty('opacity-toggle');
     }
 
     #isWorkspaceOpacityEnabled(wsIndex) {
@@ -1593,24 +1707,34 @@ class Application {
         };
     }
 
-    #toggleGapsOnActiveWorkspace() {
-        const wsIndex = this.#getActiveWorkspaceIndex();
-        if (!this.#isTilingEnabled(wsIndex)) {
-            this.#notify(`Workspace ${wsIndex + 1}: auto-tiling is disabled`);
-            return;
+    #toggleGapsForWorkspace(wsIndex, showNotify = true) {
+        const ws = this.#normalizeWorkspaceIndex(wsIndex);
+        if (!this.#isTilingEnabled(ws)) {
+            if (showNotify) this.#notify(`Workspace ${ws + 1}: auto-tiling is disabled`);
+            return false;
         }
-        const nextDisabled = !this.#isGapsDisabled(wsIndex);
-        this.#setGapsDisabled(wsIndex, nextDisabled);
-        this.#scheduleRetileBurst(wsIndex, 'gaps-toggle');
-        this.#notify(`Workspace ${wsIndex + 1}: gaps ${nextDisabled ? 'DISABLED' : 'ENABLED'}`);
+        const nextDisabled = !this.#isGapsDisabled(ws);
+        this.#setGapsDisabled(ws, nextDisabled);
+        this.#scheduleRetileBurst(ws, 'gaps-toggle');
+        if (showNotify) this.#notify(`Workspace ${ws + 1}: gaps ${nextDisabled ? 'DISABLED' : 'ENABLED'}`);
+        return true;
+    }
+
+    #toggleGapsOnActiveWorkspace() {
+        this.#toggleGapsForWorkspace(this.#getActiveWorkspaceIndex(), true);
+    }
+
+    #toggleOpacityForWorkspace(wsIndex, showNotify = true) {
+        const ws = this.#normalizeWorkspaceIndex(wsIndex);
+        const nextDisabled = !this.#isOpacityDisabled(ws);
+        this.#setOpacityDisabled(ws, nextDisabled);
+        try { if (this.#windowOpacity) this.#windowOpacity.refreshSoon(); } catch (e) {}
+        if (showNotify) this.#notify(`Workspace ${ws + 1}: auto-opacity ${nextDisabled ? 'DISABLED' : 'ENABLED'}`);
+        return true;
     }
 
     #toggleOpacityOnActiveWorkspace() {
-        const wsIndex = this.#getActiveWorkspaceIndex();
-        const nextDisabled = !this.#isOpacityDisabled(wsIndex);
-        this.#setOpacityDisabled(wsIndex, nextDisabled);
-        try { if (this.#windowOpacity) this.#windowOpacity.refreshSoon(); } catch (e) {}
-        this.#notify(`Workspace ${wsIndex + 1}: auto-opacity ${nextDisabled ? 'DISABLED' : 'ENABLED'}`);
+        this.#toggleOpacityForWorkspace(this.#getActiveWorkspaceIndex(), true);
     }
  
     // ----- v0.67 keyboard focus/swap/grow helpers -----
@@ -2273,6 +2397,7 @@ class Application {
         if (wm) {
             this.#safeConnect(wm, 'active-workspace-changed', () => {
                 const wsIndex = this.#getActiveWorkspaceIndex();
+                this.#markExternalStatusDirty('workspace-switch');
                 // v0.61: never keep borders from an inactive workspace around
                 // (explicitly clear to avoid any processing/drawing on inactive workspaces).
                 this.#clearTileBorders();
@@ -2896,36 +3021,44 @@ class Application {
         });
     }
 
-    #toggleTilingOnActiveWorkspace() {
-        const wsIndex = this.#getActiveWorkspaceIndex();
-        const next = !this.#isTilingEnabled(wsIndex);
-        this.#enabledWorkspaces[wsIndex] = next;
+    #toggleTilingForWorkspace(wsIndex, showNotify = true) {
+        const ws = this.#normalizeWorkspaceIndex(wsIndex);
+        const next = !this.#isTilingEnabled(ws);
+        this.#enabledWorkspaces[ws] = next;
 
-        this.#notify(`Workspace ${wsIndex + 1}: auto-tiling ${next ? 'ENABLED' : 'DISABLED'}`);
+        if (showNotify) this.#notify(`Workspace ${ws + 1}: auto-tiling ${next ? 'ENABLED' : 'DISABLED'}`);
 
         if (next) {
-            // 1.6: On enable, tile all current windows there
-            this.#scheduleRetileBurst(wsIndex, 'enabled');
-            this.#syncTileBorders(wsIndex, 'enabled', false);
-        } else {
-            // v0.61: disabling tiling on active workspace must hide borders immediately.
-            this.#syncTileBorders(wsIndex, 'disabled', false);
+            this.#scheduleRetileBurst(ws, 'enabled');
+            if (ws === this.#getActiveWorkspaceIndex()) this.#syncTileBorders(ws, 'enabled', false);
+        } else if (ws === this.#getActiveWorkspaceIndex()) {
+            this.#syncTileBorders(ws, 'disabled', false);
         }
+
+        this.#markExternalStatusDirty('tiling-toggle');
+        return next;
+    }
+
+    #toggleTilingOnActiveWorkspace() {
+        this.#toggleTilingForWorkspace(this.#getActiveWorkspaceIndex(), true);
+    }
+
+    #retileWorkspaceByIndex(wsIndex, showNotify = true) {
+        const ws = this.#normalizeWorkspaceIndex(wsIndex);
+        if (!this.#isTilingEnabled(ws)) {
+            if (showNotify) this.#notify(`Workspace ${ws + 1}: auto-tiling is disabled`);
+            return false;
+        }
+
+        this.#clearWorkspaceTrees(ws);
+        this.#scheduleRetileBurst(ws, 'manual-retile-recover');
+        if (showNotify) this.#notify(`Workspace ${ws + 1}: layout rebuilt (recovery retile)`);
+        this.#markExternalStatusDirty('retile-rebuild');
+        return true;
     }
 
     #retileActiveWorkspace() {
-        const wsIndex = this.#getActiveWorkspaceIndex();
-        if (!this.#isTilingEnabled(wsIndex)) {
-            this.#notify(`Workspace ${wsIndex + 1}: auto-tiling is disabled`);
-            return;
-        }
-
-        // v0.682: recovery semantics:
-        // - clear current workspace BSP (handles monitor add/remove desync + "messed up layouts")
-        // - rebuild via burst passes
-        this.#clearWorkspaceTrees(wsIndex);
-        this.#scheduleRetileBurst(wsIndex, 'manual-retile-recover');
-        this.#notify(`Workspace ${wsIndex + 1}: layout rebuilt (recovery retile)`);
+        this.#retileWorkspaceByIndex(this.#getActiveWorkspaceIndex(), true);
     }
  
     #onDragEndInsert(metaWindow, ctx) {

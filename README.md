@@ -26,11 +26,13 @@ You love your Linux Mint and Cinnamon, but you would still like to try one of th
   - [6. Keyboard Ergonomics (v0.67 / v0.671)](#6-keyboard-ergonomics-v067--v0671)
   - [7. Borders, Visuals, HUD](#7-borders-visuals-hud)
   - [8. Auto Window Opacity (v0.686)](#8-auto-window-opacity-v0686)
+  - [9. External Hooks / Polybar IPC](#9-external-hooks--polybar-ipc)
 - [Install](#install)
 - [Enable / Reload](#enable--reload)
 - [Default Hotkeys](#default-hotkeys)
 - [Forced Floating Rules](#forced-floating-rules)
 - [State File](#state-file)
+- [External Hooks](#external-hooks)
 - [Debugging](#debugging)
 - [Limitations](#limitations)
 - [Architecture (Current)](#architecture-current)
@@ -113,11 +115,22 @@ Regex-based rules by class/title (`forceFloatingRules`) to keep selected apps ou
   - configurable position (`top-center`, `bottom-center`, `active-monitor`)
 
 ### 8. Auto Window Opacity (v0.686)
+Integrated from `auto-window-opacity` and adapted to hyprmon:
 - Focused/unfocused/fullscreen-maximized opacity levels
 - Optional dialog/utility participation
 - Refresh interval control
 - Global enable switch
 - **Per-workspace opacity toggle** (persisted)
+
+### 9. External Hooks / Polybar IPC
+Hyprmon exposes a lightweight file-based hook interface under:
+- `~/.config/hyprmon@og-yona/hooks/status.json` (readable state snapshot)
+- `~/.config/hyprmon@og-yona/hooks/command.json` (write commands for hyprmon to consume)
+
+Use cases:
+- Polybar tooltip/state rendering from `status.json`
+- Polybar click actions (toggle tiling/gaps/opacity, retile, side switch)
+- Trigger HUD status display from external scripts
 
 ---
 
@@ -174,6 +187,7 @@ If changes do not apply:
 - Manual retile: `Super+Shift+T`
 - Reset layout: `Super+Shift+R`
 - Toggle gaps (workspace): `Super+G`
+- Show workspace status HUD: *(unbound by default; bind `showWorkspaceStatusHotkey` if desired)*
 
 ### Sideviews
 - Previous side: `Super+Page_Up`
@@ -236,6 +250,81 @@ Includes:
 
 ---
 
+## External Hooks
+
+Paths:
+- `~/.config/hyprmon@og-yona/hooks/status.json`
+- `~/.config/hyprmon@og-yona/hooks/command.json`
+
+`status.json` schema (excerpt):
+```json
+{
+  "schema": "hyprmon.external.status.v1",
+  "activeWorkspace": 1,
+  "active": {
+    "workspace": 1,
+    "tilingEnabled": true,
+    "gapsEnabled": true,
+    "opacityEnabled": false,
+    "activeSide": 2,
+    "knownSides": [1, 2, 3]
+  },
+  "workspaces": {
+    "1": { "...": "..." },
+    "2": { "...": "..." }
+  }
+}
+```
+
+Write a command by placing JSON in `command.json`. A single object or array of objects is supported.
+
+Examples:
+```json
+{ "action": "toggle-tiling" }
+```
+
+```json
+{ "action": "toggle-gaps", "workspace": 2 }
+```
+
+```json
+[
+  { "action": "toggle-opacity" },
+  { "action": "show-status" }
+]
+```
+
+Supported actions:
+- `toggle-tiling`
+- `toggle-gaps`
+- `toggle-opacity`
+- `retile` (`force-retile` / `reset-layout` aliases)
+- `defloat-all`
+- `switch-side-next`
+- `switch-side-prev`
+- `show-status`
+- `notify` (with `message`)
+
+Workspace targeting fields:
+- `workspace` (1-based)
+- `wsIndex` (0-based)
+- `ws` (0-based alias)
+
+Polybar script tip:
+- Write `command.json` atomically (`tmp file + mv`) to avoid partial-read races.
+- Optional helper script included in repo: `./hyprmon-hookctl.sh`
+
+Helper examples:
+```bash
+./hyprmon-hookctl.sh active-summary
+./hyprmon-hookctl.sh tooltip
+./hyprmon-hookctl.sh send toggle-tiling
+./hyprmon-hookctl.sh send toggle-gaps 2
+./hyprmon-hookctl.sh send show-status
+```
+
+---
+
 ## Debugging
 
 ### Looking Glass
@@ -265,6 +354,7 @@ Main runtime is orchestrated by `application.js`, with extracted modules:
 - `hotkeys.js`
 - `hud-notifier.js`
 - `forced-float-rules.js`
+- `external-hooks.js`
 
 ---
 

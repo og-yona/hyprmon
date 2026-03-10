@@ -5,7 +5,7 @@
     "uuid": "hyprmon@og-yona",
     "name": "hyprmon",
     "description": "Auto-tile and snap & manage your windows per workspace in hyprland-like way.",
-    "version": "0.6862",
+    "version": "0.687",
     "multiversion": false,
     "url": "https://github.com/og-yona/hyprmon",
     "author": "og-yona",

@@ -29,6 +29,11 @@
     "default": "<Super>g",
     "description": "Toggle hyprmon gaps on/off on the current workspace (tiling-enabled only)"
   },
+  "showWorkspaceStatusHotkey": {
+    "type": "keybinding",
+    "default": "<Super>h",
+    "description": "Show current workspace hyprmon status on HUD (workspace/side/tiling/gaps/opacity)"
+  },
 
   "_header_windowmodes": {
     "type": "header",
