@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# hyprmon-hookctl.sh
 set -euo pipefail
 
 UUID="${HYPRMON_UUID:-hyprmon@og-yona}"
@@ -122,5 +121,3 @@ main() {
 }
 
 main "$@"
-
-# hyprmon-hookctl.sh END #

@@ -12,6 +12,7 @@ class HudNotifier {
     #box = null;
     #label = null;
     #timer = 0;
+    #lastSoundAt = 0;
 
     constructor(getSettingsData, getActiveMonitorIndex) {
         this.#getSettingsData = getSettingsData;
@@ -38,7 +39,43 @@ class HudNotifier {
         const position = (rawPos === 'bottom-center' || rawPos === 'active-monitor')
             ? rawPos
             : 'top-center';
-        return { timeoutMs, position };
+        return {
+            timeoutMs,
+            position,
+            hudSoundEnabled: !!sd.hudNotifySoundEnabled?.value,
+            sideviewSoundEnabled: !!sd.sideviewChangeSoundEnabled?.value,
+            soundTheme: String(sd.hudNotifySoundTheme?.value || 'message-new-instant').trim() || 'message-new-instant',
+        };
+    }
+
+    #shouldPlaySound(opts, cfg) {
+        const o = (opts && typeof opts === 'object') ? opts : Object.create(null);
+        if (o.silent === true || o.playSound === false) return false;
+        if (o.playSound === true) return true;
+
+        const category = String(o.category || '').trim().toLowerCase();
+        if (category === 'sideview') return !!(cfg.sideviewSoundEnabled || cfg.hudSoundEnabled);
+        return !!cfg.hudSoundEnabled;
+    }
+
+    #playSound(soundTheme = 'message-new-instant') {
+        const now = Date.now();
+        if ((now - this.#lastSoundAt) < 90) return;
+        this.#lastSoundAt = now;
+
+        try {
+            const sp = (global.display && typeof global.display.get_sound_player === 'function')
+                ? global.display.get_sound_player()
+                : null;
+            if (sp && typeof sp.play_from_theme === 'function') {
+                sp.play_from_theme(soundTheme, 'hyprmon', null);
+                return;
+            }
+        } catch (e) {}
+
+        try {
+            if (global.display && typeof global.display.beep === 'function') global.display.beep();
+        } catch (e) {}
     }
 
     #ensure() {
@@ -88,11 +125,13 @@ class HudNotifier {
         } catch (e) {}
     }
 
-    notify(message) {
+    notify(message, opts = null) {
         const text = String(message || '').trim();
         if (!text) return;
 
         this.#ensure();
+        const cfg = this.#getConfig();
+        const playSound = this.#shouldPlaySound(opts, cfg);
         if (this.#box && this.#label) {
             try {
                 this.#label.set_text(text);
@@ -104,7 +143,7 @@ class HudNotifier {
                     Mainloop.source_remove(this.#timer);
                     this.#timer = 0;
                 }
-                const cfg = this.#getConfig();
+                if (playSound) this.#playSound(cfg.soundTheme);
                 this.#timer = Mainloop.timeout_add(cfg.timeoutMs, () => {
                     this.#timer = 0;
                     try { if (this.#box) this.#box.hide(); } catch (e) {}
@@ -117,6 +156,7 @@ class HudNotifier {
         // fallback
         try {
             if (Main.notify) {
+                if (playSound) this.#playSound(cfg.soundTheme);
                 Main.notify('hyprmon', text);
                 return;
             }

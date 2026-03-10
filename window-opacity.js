@@ -1,5 +1,6 @@
 /* window-opacity.js */
 
+const Clutter = imports.gi.Clutter;
 const Mainloop = imports.mainloop;
 const Meta = imports.gi.Meta;
 const SignalManager = imports.misc.signalManager;
@@ -10,6 +11,11 @@ class WindowOpacity {
 
     #timerId = 0;
     #refreshQueued = false;
+    #refreshRunning = false;
+    #refreshAgain = false;
+
+    // winKey -> last requested opacity [0..255]
+    #lastTargetByKey = Object.create(null);
 
     constructor(ctx) {
         this.#ctx = ctx || Object.create(null);
@@ -22,6 +28,7 @@ class WindowOpacity {
         this.#stopTimer();
         try { this.#signals.disconnectAllSignals(); } catch (e) {}
         this.restoreAll();
+        this.#lastTargetByKey = Object.create(null);
     }
 
     onSettingsChanged() {
@@ -47,6 +54,8 @@ class WindowOpacity {
             focusedOpacity: clamp(sd.opacityFocused?.value, 5, 100, 100),
             unfocusedOpacity: clamp(sd.opacityUnfocused?.value, 5, 100, 85),
             refreshIntervalMs: clamp(sd.opacityRefreshIntervalMs?.value, 100, 5000, 250),
+            animateEnabled: !!sd.opacityAnimateEnabled?.value,
+            animateDurationMs: clamp(sd.opacityAnimateDurationMs?.value, 0, 1000, 120),
             affectDialogs: !!sd.opacityAffectDialogs?.value,
             affectUtilityWindows: !!sd.opacityAffectUtilityWindows?.value,
         };
@@ -95,15 +104,37 @@ class WindowOpacity {
     }
 
     refreshNow() {
+        if (this.#refreshRunning) {
+            this.#refreshAgain = true;
+            return;
+        }
+        this.#refreshRunning = true;
+
         const cfg = this.#cfg();
-        const actors = global.get_window_actors() || [];
-        if (!actors.length) return;
+        try {
+            const actors = global.get_window_actors() || [];
+            if (!actors.length) return;
 
-        let focusedWindow = null;
-        try { focusedWindow = global.display.focus_window; } catch (e) {}
+            let focusedWindow = null;
+            try { focusedWindow = global.display.focus_window; } catch (e) {}
 
-        for (const actor of actors) {
-            this.#applyOpacityToActor(actor, focusedWindow, cfg);
+            const activeWs = this.#ctx.getActiveWorkspaceIndex ? this.#ctx.getActiveWorkspaceIndex() : null;
+            const seenKeys = new Set();
+
+            for (const actor of actors) {
+                this.#applyOpacityToActor(actor, focusedWindow, activeWs, cfg, seenKeys);
+            }
+
+            // prune stale keys for destroyed windows
+            for (const k in this.#lastTargetByKey) {
+                if (!seenKeys.has(k)) delete this.#lastTargetByKey[k];
+            }
+        } finally {
+            this.#refreshRunning = false;
+            if (this.#refreshAgain) {
+                this.#refreshAgain = false;
+                this.refreshSoon();
+            }
         }
     }
 
@@ -117,29 +148,120 @@ class WindowOpacity {
         }
     }
 
-    #applyOpacityToActor(actor, focusedWindow, cfg) {
+    #applyOpacityToActor(actor, focusedWindow, activeWs, cfg, seenKeys) {
         if (!actor) return;
 
         let metaWindow = null;
         try { metaWindow = actor.meta_window; } catch (e) {}
         if (!metaWindow) return;
 
+        const winKey = this.#windowKey(metaWindow);
+        if (winKey) seenKeys.add(winKey);
+
         const wsIndex = this.#ctx.getWorkspaceIndexOfWindow ? this.#ctx.getWorkspaceIndexOfWindow(metaWindow) : null;
+        if (!this.#shouldProcessWorkspace(metaWindow, wsIndex, activeWs)) return;
+
+        if (winKey && this.#ctx.isWindowSideHiddenByKey && this.#ctx.isWindowSideHiddenByKey(winKey)) return;
+
         const wsOpacityEnabled = (wsIndex === null)
             ? true
             : !!(this.#ctx.isWorkspaceOpacityEnabled ? this.#ctx.isWorkspaceOpacityEnabled(wsIndex) : true);
 
+        let target = 255;
         if (!cfg.enabled || !wsOpacityEnabled || !this.#shouldAffectWindow(metaWindow, cfg)) {
-            this.#setActorOpacity(actor, 255);
-            return;
+            target = 255;
+        } else {
+            const targetPercent = this.#pickOpacityForWindow(metaWindow, focusedWindow, cfg);
+            target = this.#percentToOpacity(targetPercent);
         }
 
-        const targetPercent = this.#pickOpacityForWindow(metaWindow, focusedWindow, cfg);
-        this.#setActorOpacity(actor, this.#percentToOpacity(targetPercent));
+        this.#setActorOpacitySmart(actor, winKey, target, cfg);
+    }
+
+    #windowKey(metaWindow) {
+        if (!metaWindow) return '';
+        try {
+            if (this.#ctx.getWindowKey) {
+                const k = this.#ctx.getWindowKey(metaWindow);
+                if (k !== null && k !== undefined) return String(k);
+            }
+        } catch (e) {}
+        try {
+            if (typeof metaWindow.get_stable_sequence === 'function') {
+                const seq = Number(metaWindow.get_stable_sequence());
+                if (Number.isFinite(seq) && seq > 0) return String(seq);
+            }
+        } catch (e) {}
+        return '';
+    }
+
+    #shouldProcessWorkspace(metaWindow, wsIndex, activeWs) {
+        if (activeWs === null || activeWs === undefined) return true;
+        if (wsIndex === null || wsIndex === undefined) return true;
+        if (wsIndex === activeWs) return true;
+
+        // Skip off-workspace windows by default; this reduces churn/fighting when many windows exist.
+        try { if (typeof metaWindow.is_on_all_workspaces === 'function') return !!metaWindow.is_on_all_workspaces(); } catch (e) {}
+        return false;
+    }
+
+    #setActorOpacitySmart(actor, winKey, value, cfg) {
+        const target = Math.max(0, Math.min(255, Math.floor(Number(value) || 255)));
+        const key = String(winKey || '');
+        const last = key ? this.#lastTargetByKey[key] : undefined;
+        const cur = this.#getActorOpacity(actor);
+
+        // Avoid reapplying identical targets on every refresh tick.
+        if (last === target && Math.abs(cur - target) <= 2) return;
+
+        const canAnimate =
+            !!cfg.animateEnabled &&
+            Number(cfg.animateDurationMs) > 0 &&
+            Math.abs(cur - target) >= 3;
+
+        let applied = false;
+        if (canAnimate) applied = this.#setActorOpacityAnimated(actor, target, cfg.animateDurationMs);
+        if (!applied) this.#setActorOpacity(actor, target);
+
+        if (key) this.#lastTargetByKey[key] = target;
+    }
+
+    #getActorOpacity(actor) {
+        try {
+            const n = Number(actor.opacity);
+            if (Number.isFinite(n)) return Math.max(0, Math.min(255, Math.floor(n)));
+        } catch (e) {}
+        return 255;
+    }
+
+    #setActorOpacityAnimated(actor, target, durationMs) {
+        const dur = Math.max(0, Math.min(1000, Math.floor(Number(durationMs) || 0)));
+        if (dur <= 0) return false;
+
+        try {
+            if (typeof actor.ease === 'function') {
+                actor.ease({
+                    opacity: target,
+                    duration: dur,
+                    mode: Clutter.AnimationMode.EASE_OUT_QUAD,
+                });
+                return true;
+            }
+        } catch (e) {}
+
+        try {
+            if (typeof actor.set_easing_duration === 'function') actor.set_easing_duration(dur);
+            if (typeof actor.set_easing_mode === 'function') actor.set_easing_mode(Clutter.AnimationMode.EASE_OUT_QUAD);
+            actor.opacity = target;
+            return true;
+        } catch (e) {}
+
+        return false;
     }
 
     #setActorOpacity(actor, value) {
         const v = Math.max(0, Math.min(255, Math.floor(Number(value) || 255)));
+        try { if (typeof actor.remove_all_transitions === 'function') actor.remove_all_transitions(); } catch (e) {}
         try { actor.opacity = v; }
         catch (e) {
             try { if (typeof actor.set_opacity === 'function') actor.set_opacity(v); } catch (_) {}

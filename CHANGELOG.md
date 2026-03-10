@@ -1,6 +1,34 @@
 # CHANGELOG
 Changelog for hyprmon -project.
 
+## v0.688 Additional toggleable enhancements and fixes
+
+  - Opacity smoothing + anti-fighting improvements:
+      - Added optional opacity animation and duration settings in settings-schema.json:159.
+      - Implemented animated opacity transitions and “apply only when target changed” logic in window-opacity.js:43.
+      - Added guard against overlapping refresh passes and reduced churn by skipping non-visible workspace windows in
+        window-opacity.js:106.
+      - Opacity now also ignores side-hidden windows to avoid churn during sideview hide/restore in window-
+        opacity.js:164, wired via application.js:279.
+  - Sideview notification on focus redirect (Alt-Tab/autofocus):
+      - Added setting sideviewNotifyOnFocusRedirect in settings-schema.json:88.
+      - Redirect now can notify with explicit auto-switch message in sideviews.js:409.
+  - HUD and sideview sound toggles:
+      - Added settings:
+          - hudNotifySoundEnabled
+          - sideviewChangeSoundEnabled
+          - hudNotifySoundTheme
+            in settings-schema.json:322.
+      - Added sound playback with cooldown and category-aware behavior in hud-notifier.js:34.
+      - Notification path now supports options/categories via application.js:454 and sideviews.js:346.
+  - Sideview animation (best-effort slide-in):
+      - Added settings sideviewAnimateSwitch and sideviewAnimateDurationMs in settings-schema.json:93.
+      - Implemented reveal animation using compositor actor translation in sideviews.js:32.
+  - Wiring and docs:
+      - Passed settings + side-hidden callbacks into sideviews/opacity modules in application.js:243.
+      - Bound new opacity animation settings for live updates in application.js:304.
+      - Updated feature notes in README.md:89.
+
 ## v0.687 Hyprmon now has a file-based external hooks/IPC path suitable for Polybar/script integration, with minimal application.js wiring and most logic in a new module.
 
 ### What changed

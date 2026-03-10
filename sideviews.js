@@ -1,5 +1,6 @@
 /* sideviews.js */
 
+const Clutter = imports.gi.Clutter;
 const Mainloop = imports.mainloop;
 const Meta = imports.gi.Meta;
 
@@ -16,6 +17,69 @@ class Sideviews {
 
     constructor(ctx) {
         this.#ctx = ctx || Object.create(null);
+    }
+
+    #cfg() {
+        const sd = this.#ctx.getSettingsData ? (this.#ctx.getSettingsData() || Object.create(null)) : Object.create(null);
+        const rawDur = Number(sd.sideviewAnimateDurationMs?.value ?? 160);
+        return {
+            notifyOnFocusRedirect: (sd.sideviewNotifyOnFocusRedirect?.value !== false),
+            animateSwitch: !!sd.sideviewAnimateSwitch?.value,
+            animateDurationMs: Math.max(0, Math.min(600, Math.floor(Number.isFinite(rawDur) ? rawDur : 160))),
+        };
+    }
+
+    #animateSideReveal(wsIndex, sideIndex, direction) {
+        const cfg = this.#cfg();
+        if (!cfg.animateSwitch || cfg.animateDurationMs <= 0) return;
+
+        const dir = Number(direction) >= 0 ? 1 : -1;
+        const dur = cfg.animateDurationMs;
+
+        Mainloop.idle_add(() => {
+            try {
+                for (const w of listAllMetaWindows()) {
+                    if (!w || w.window_type !== Meta.WindowType.NORMAL) continue;
+                    if (this.#ctx.getWorkspaceIndexOfWindow(w) !== wsIndex) continue;
+
+                    const k = String(this.#ctx.getWindowKey(w));
+                    if (this.#ctx.getWindowSide(wsIndex, k) !== sideIndex) continue;
+                    if (this.#ctx.isSticky(w)) continue;
+
+                    const actor = (typeof w.get_compositor_private === 'function') ? w.get_compositor_private() : null;
+                    if (!actor) continue;
+
+                    let monW = 1920;
+                    try {
+                        const monIndex = this.#ctx.getMonitorIndexOfWindow(w);
+                        if (monIndex !== null && monIndex !== undefined) {
+                            const m = global.display.get_monitor_geometry(monIndex);
+                            if (m && Number.isFinite(Number(m.width))) monW = Number(m.width);
+                        }
+                    } catch (e) {}
+
+                    const dist = Math.max(64, Math.min(280, Math.floor(monW * 0.14)));
+                    try { if (typeof actor.remove_all_transitions === 'function') actor.remove_all_transitions(); } catch (e) {}
+                    try {
+                        actor.translation_x = dir * dist;
+                        if (typeof actor.ease === 'function') {
+                            actor.ease({
+                                translation_x: 0,
+                                duration: dur,
+                                mode: Clutter.AnimationMode.EASE_OUT_CUBIC,
+                            });
+                        } else {
+                            if (typeof actor.set_easing_duration === 'function') actor.set_easing_duration(dur);
+                            if (typeof actor.set_easing_mode === 'function') actor.set_easing_mode(Clutter.AnimationMode.EASE_OUT_CUBIC);
+                            actor.translation_x = 0;
+                        }
+                    } catch (e) {
+                        try { actor.translation_x = 0; } catch (_) {}
+                    }
+                }
+            } catch (e) {}
+            return false;
+        });
     }
 
     destroy() {
@@ -266,6 +330,7 @@ class Sideviews {
         this.#ctx.setActiveSideIndex(wsIndex, nextSide);
         this.restoreActiveSideWindows(wsIndex);
         this.parkInactiveSideWindows(wsIndex);
+        this.#animateSideReveal(wsIndex, nextSide, nextSide - oldSide);
         this.#ctx.clearWorkspaceLastLayout(wsIndex);
 
         if (this.#ctx.isTilingEnabled(wsIndex)) this.#ctx.scheduleRetileBurst(wsIndex, 'side-switch');
@@ -278,7 +343,7 @@ class Sideviews {
             });
         }
 
-        this.#ctx.notify(`Workspace ${wsIndex + 1}: side ${nextSide + 1}`);
+        this.#ctx.notify(`Workspace ${wsIndex + 1}: side ${nextSide + 1}`, { category: 'sideview' });
     }
 
     moveFocusedWindowToSideDelta(delta) {
@@ -335,12 +400,15 @@ class Sideviews {
         this.#ctx.setActiveSideIndex(wsIndex, targetSide);
         this.restoreActiveSideWindows(wsIndex);
         this.parkInactiveSideWindows(wsIndex);
+        this.#animateSideReveal(wsIndex, targetSide, targetSide - activeSide);
         this.#ctx.clearWorkspaceLastLayout(wsIndex);
 
         if (this.#ctx.isTilingEnabled(wsIndex)) this.#ctx.scheduleRetileBurst(wsIndex, 'focus-side-redirect');
         else this.#ctx.syncTileBorders(wsIndex, 'focus-side-redirect', false);
 
-        this.#ctx.notify(`Workspace ${wsIndex + 1}: side ${targetSide + 1}`);
+        if (this.#cfg().notifyOnFocusRedirect) {
+            this.#ctx.notify(`Auto-switched to side ${targetSide + 1} (workspace ${wsIndex + 1})`, { category: 'sideview' });
+        }
         return true;
     }
 }

@@ -241,6 +241,7 @@ class Application {
             }
         );
         this.#sideviews = new Sideviews({
+            getSettingsData: () => this.#settings?.settingsData || Object.create(null),
             getActiveWorkspaceIndex: () => this.#getActiveWorkspaceIndex(),
             getActiveSideIndex: (wsIndex) => this.#getActiveSideIndex(wsIndex),
             setActiveSideIndex: (wsIndex, sideIndex) => this.#setActiveSideIndex(wsIndex, sideIndex),
@@ -264,7 +265,7 @@ class Application {
             },
             suppressWindowGeomSignals: (w, ms) => this.#suppressWindowGeomSignals(w, ms),
             isWindowBusyKey: (k) => this.#movingWindowKeys.has(k) || this.#resizingWindowKeys.has(k),
-            notify: (message) => this.#notify(message),
+            notify: (message, opts) => this.#notify(message, opts),
             focusWindowOnSide: (wsIndex, sideIndex) => this.#focusWindowOnSide(wsIndex, sideIndex),
         });
         this.#sideState = new SideState(
@@ -279,6 +280,9 @@ class Application {
             getSettingsData: () => this.#settings?.settingsData || Object.create(null),
             getWorkspaceIndexOfWindow: (w) => this.#getWorkspaceIndexOfWindow(w),
             isWorkspaceOpacityEnabled: (wsIndex) => this.#isWorkspaceOpacityEnabled(wsIndex),
+            getActiveWorkspaceIndex: () => this.#getActiveWorkspaceIndex(),
+            getWindowKey: (w) => this.#windowKey(w),
+            isWindowSideHiddenByKey: (k) => this.#sideviews ? this.#sideviews.isWindowSideHiddenByKey(k) : false,
         });
         this.#externalHooks = new ExternalHooks(uuid, {
             getActiveWorkspaceIndex: () => this.#getActiveWorkspaceIndex(),
@@ -303,6 +307,8 @@ class Application {
             'opacityFocused',
             'opacityUnfocused',
             'opacityRefreshIntervalMs',
+            'opacityAnimateEnabled',
+            'opacityAnimateDurationMs',
             'opacityAffectDialogs',
             'opacityAffectUtilityWindows',
         ]) {
@@ -448,8 +454,8 @@ class Application {
         if (this.#hotkeys) this.#hotkeys.enable();
     }
 
-    #notify(message) {
-        if (this.#hudNotifier) this.#hudNotifier.notify(message);
+    #notify(message, opts = null) {
+        if (this.#hudNotifier) this.#hudNotifier.notify(message, opts || Object.create(null));
         else global.log(`hyprmon: ${String(message || '')}`);
     }
 

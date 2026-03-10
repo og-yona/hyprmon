@@ -91,6 +91,8 @@ Behavior:
 - Inactive side windows are parked/hidden (Muffin-safe fallback)
 - Focusing a window from another side redirects to that side
 - Side switch now focuses a window from the target side
+- Optional best-effort side reveal animation (slide-in style)
+- Optional focus-redirect notification (Alt-Tab/autofocus side switch)
 
 ### 4. Window Modes
 - Floating mode per window (not auto-tiled, stays on top of auto-tiled windows)
@@ -113,12 +115,14 @@ Regex-based rules by class/title (`forceFloatingRules`) to keep selected apps ou
 - Custom Hyprmon HUD notifications (non-queued, overwrite behavior)
   - configurable timeout
   - configurable position (`top-center`, `bottom-center`, `active-monitor`)
+  - optional notification sounds (general + sideview-specific toggle)
 
 ### 8. Auto Window Opacity (v0.686)
 Integrated from `auto-window-opacity` and adapted to hyprmon:
 - Focused/unfocused/fullscreen-maximized opacity levels
 - Optional dialog/utility participation
 - Refresh interval control
+- Optional opacity transition smoothing (duration configurable)
 - Global enable switch
 - **Per-workspace opacity toggle** (persisted)
 

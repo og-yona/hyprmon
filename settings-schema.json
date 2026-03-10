@@ -85,6 +85,26 @@
     "default": "<Super><Shift>Page_Down",
     "description": "Move focused window to next sideview"
   },
+  "sideviewNotifyOnFocusRedirect": {
+    "type": "checkbox",
+    "default": true,
+    "description": "Show notification when focus/Alt-Tab auto-switches sideview"
+  },
+  "sideviewAnimateSwitch": {
+    "type": "checkbox",
+    "default": false,
+    "description": "Animate sideview reveal (best effort slide-in)"
+  },
+  "sideviewAnimateDurationMs": {
+    "type": "spinbutton",
+    "description": "Sideview animation duration (ms)",
+    "tooltip": "Best effort compositor animation for incoming sideview windows.",
+    "default": 160,
+    "min": 0,
+    "max": 600,
+    "step": 10,
+    "dependency": "sideviewAnimateSwitch"
+  },
 
   "_header_auto_opacity": {
     "type": "header",
@@ -135,6 +155,22 @@
     "max": 5000,
     "step": 50,
     "dependency": "autoOpacityEnabled"
+  },
+  "opacityAnimateEnabled": {
+    "type": "checkbox",
+    "default": true,
+    "description": "Animate opacity transitions (smoother focus changes)",
+    "dependency": "autoOpacityEnabled"
+  },
+  "opacityAnimateDurationMs": {
+    "type": "spinbutton",
+    "description": "Opacity animation duration (ms)",
+    "tooltip": "Short easing duration for focus/visibility opacity transitions.",
+    "default": 120,
+    "min": 0,
+    "max": 1000,
+    "step": 10,
+    "dependency": "opacityAnimateEnabled"
   },
   "opacityAffectDialogs": {
     "type": "checkbox",
@@ -282,6 +318,23 @@
     "description": "HUD notification position",
     "tooltip": "Accepted values: top-center, bottom-center, active-monitor. Invalid values fall back to top-center.",
     "default": "top-center"
+  },
+  "hudNotifySoundEnabled": {
+    "type": "checkbox",
+    "default": false,
+    "description": "Play sound for hyprmon HUD notifications"
+  },
+  "sideviewChangeSoundEnabled": {
+    "type": "checkbox",
+    "default": false,
+    "description": "Play sound for sideview change notifications"
+  },
+  "hudNotifySoundTheme": {
+    "type": "entry",
+    "default": "message-new-instant",
+    "description": "Notification sound theme id",
+    "tooltip": "Theme sound id used for HUD sounds (example: message-new-instant).",
+    "dependency": "hudNotifySoundEnabled"
   },
 
   "_header_new_windows": {
